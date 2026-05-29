@@ -1,2 +1,581 @@
 # MongoCustody
-A HIPAA-compliant backup and recovery library for MongoDB.
+
+A HIPAA-compliant backup and recovery library for MongoDB, built on .NET 10.
+
+MongoCustody implements a hybrid incremental backup strategy — quarterly full backups, daily incrementals, and weekly checkpoints — with tamper-evident storage, a full audit trail, and a bounded restore chain regardless of how far into a retention period you are. It works against any MongoDB-compatible database, including Azure Cosmos DB for MongoDB.
+
+---
+
+## Table of Contents
+
+- [Why MongoCustody](#why-mongocustody)
+- [Backup Strategy](#backup-strategy)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Usage](#usage)
+  - [As a Library](#as-a-library)
+  - [As a CLI Tool](#as-a-cli-tool)
+- [Restore Procedure](#restore-procedure)
+- [Validation](#validation)
+- [HIPAA Compliance](#hipaa-compliance)
+- [Storage Layout](#storage-layout)
+- [Development](#development)
+- [Testing](#testing)
+- [Implementation Phases](#implementation-phases)
+
+---
+
+## Why MongoCustody
+
+MongoDB's native backup tooling and cloud provider backup features typically offer short retention windows (30 days or less) with no user custody over the backup artifacts. For regulated environments — HIPAA, SOC 2, PCI-DSS — you need:
+
+- **Your own custody** of backup artifacts, with proof of integrity
+- **Long-term retention** (HIPAA requires up to 6 years)
+- **Tamper-evident storage** to satisfy audit requirements
+- **A tested, documented restore procedure** — not just a hope that the blobs are there
+- **A bounded restore complexity** that does not grow linearly with time
+
+MongoCustody is designed to satisfy all of these requirements out of the box, without locking you into a proprietary backup format or a third-party SaaS platform.
+
+---
+
+## Backup Strategy
+
+MongoCustody uses a three-tier hybrid model:
+
+```
+Q1 Full Backup (Jan 1)
+│   Complete export of all collections   anchor_ts = T₀
+│
+├── Incremental  Jan 2   _ts > T₀   anchor_ts = T₁
+├── Incremental  Jan 3   _ts > T₁   anchor_ts = T₂
+├── Incremental  Jan 4   _ts > T₂   anchor_ts = T₃
+├── Incremental  Jan 5   _ts > T₃   anchor_ts = T₄
+├── Incremental  Jan 6   _ts > T₄   anchor_ts = T₅
+├── Incremental  Jan 7   _ts > T₅   anchor_ts = T₆
+│
+├── Checkpoint   Jan 8   merge of Jan 2–7 (deduplicated, per collection)
+│
+├── Incremental  Jan 9   _ts > T₆   anchor_ts = T₇
+│   ... (13 weeks per quarter)
+│
+Q2 Full Backup (Apr 1)   new chain begins
+```
+
+| Backup type | Frequency | Purpose |
+|---|---|---|
+| **Full** | Quarterly (Jan 1, Apr 1, Jul 1, Oct 1) | Canonical baseline; starts a new incremental chain |
+| **Incremental** | Daily (off-hours) | Captures all documents changed since the previous backup using the server-managed `_ts` field |
+| **Checkpoint** | Weekly | Deduplicates 6 preceding incrementals into a single file per collection; bounds restore complexity |
+
+### Key design properties
+
+**Chunked export, one or more files per collection, for all backup types.** Full, incremental, and checkpoint backups split large collections into sequentially numbered chunk files at document boundaries (default: 10 GB uncompressed per chunk). No document is ever split across chunks. Any individual collection or subset of collections can be restored independently. The restore procedure is identical regardless of backup type or number of chunks.
+
+**Server-managed change detection.** Incrementals use MongoDB's `_ts` field — set by the database engine on every write, not by application code — as the change predicate. This is immune to application bugs, bulk imports, and clock skew between application servers.
+
+**Self-contained storage.** All backup metadata lives in `manifest.json` files written alongside the backup chunks in Blob Storage. No separate metadata database is required. If the source database is completely lost, the backup system remains fully operational from Blob Storage alone — no circular dependency.
+
+**Soft-delete aware.** MongoCustody assumes all collections implement soft delete (`isDeleted` flag + `updatedAt` stamp). Deletions are therefore visible as document updates and are captured correctly by incremental backups. Hard-delete operations are out of scope.
+
+**Bounded restore complexity.** The maximum restore chain depth is 19 operations (1 full + 12 checkpoints + 6 daily incrementals), regardless of the restore target date. This is constant and predictable.
+
+**5-minute overlap buffer.** Incremental queries use `_ts > (previousAnchorTs - 300 seconds)` to ensure no document near the boundary is missed. Duplicate documents resulting from the overlap are handled correctly by upsert during restore.
+
+**Fully streaming I/O.** All backup and restore operations are fully streaming. No collection is loaded into memory in full at any point. Memory consumption per active collection operation is O(1) with respect to collection size.
+
+---
+
+## Project Structure
+
+```
+MongoCustody/
+│
+├── src/
+│   ├── MongoCustody.Core/             # Business logic — no Azure SDK dependencies
+│   │   ├── Abstractions/              # All interfaces
+│   │   ├── Models/                    # BackupRecord, BackupPolicy, request/result types
+│   │   ├── Engines/                   # BackupEngine, RestoreEngine,
+│   │   │                              #   ValidationEngine, CheckpointEngine
+│   │   └── Extensions/                # IServiceCollection wiring
+│   │
+│   ├── MongoCustody.Connectors/       # Azure SDK implementations
+│   │   ├── MongoDbConnector           # IBackupSourceConnector
+│   │   ├── BlobStorageConnector       # IStorageConnector
+│   │   ├── CosmosMetadataRepository   # IMetadataRepository
+│   │   └── Secrets/
+│   │       ├── AzureKeyVaultSecretProvider
+│   │       └── EnvironmentSecretProvider
+│   │
+│   └── MongoCustody.Cli/              # dotnet tool — admin CLI
+│       └── Commands/
+│           ├── BackupCommand
+│           ├── RestoreCommand
+│           ├── ValidateCommand
+│           └── HealthCommand
+│
+└── tests/
+    ├── MongoCustody.Core.Tests/       # Unit tests — no infrastructure required
+    └── MongoCustody.Connectors.Tests/ # Integration tests — Cosmos emulator + Azurite
+```
+
+`MongoCustody.Core` has zero Azure SDK dependencies. All backup logic — the export algorithm, restore chain resolution, validation rules, and checkpoint merge — lives here and is testable with plain mocks, no emulator required.
+
+`MongoCustody.Connectors` is where `MongoDB.Driver`, `Azure.Storage.Blobs`, and `Azure.Identity` live. Keeping them separate means the core logic tests run fast with no infrastructure.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- .NET 10 SDK
+- A MongoDB-compatible database (MongoDB 4.0+ or Azure Cosmos DB for MongoDB API)
+- Azure Blob Storage account (for backup artifact storage)
+- A Cosmos DB for MongoDB account or MongoDB instance for backup metadata storage
+
+### Install the CLI tool
+
+```bash
+dotnet tool install --global MongoCustody.Cli
+```
+
+### Add the library to your project
+
+```bash
+dotnet add package MongoCustody.Core
+dotnet add package MongoCustody.Connectors
+```
+
+---
+
+## Configuration
+
+All configuration maps to `MongoCustodyConfiguration`. Provide it via a JSON file, environment variables, or programmatically.
+
+### Configuration file (`mongocustody.json`)
+
+```json
+{
+  "cosmosAccountEndpoint": "https://your-account.mongo.cosmos.azure.com:10255",
+  "storageAccountEndpoint": "https://yourbackupstorage.blob.core.windows.net",
+  "storageContainerName": "backups",
+  "metadataDatabaseName": "_backup_metadata",
+  "databases": [
+    {
+      "databaseName": "your-database",
+      "excludedCollections": ["_sessions", "_changelog"]
+    }
+  ],
+  "policy": {
+    "incrementalBufferSeconds": 300,
+    "backupFormat": "Bson",
+    "compressionLevel": "Fastest",
+    "maxParallelCollections": 4,
+    "blobBlockSizeMb": 100,
+    "chunkSizeGb": 10
+  },
+  "secrets": {
+    "provider": "AzureKeyVault",
+    "keyVaultUri": "https://your-keyvault.vault.azure.net/"
+  }
+}
+```
+
+### Secret providers
+
+| Provider | When to use |
+|---|---|
+| `AzureKeyVault` | Azure-hosted workloads (Azure Functions, Container Apps, App Service). Uses `DefaultAzureCredential` — works with system-assigned managed identity on Linux and Windows. |
+| `EnvironmentVariables` | Local development, CI pipelines, and any host where secrets are injected as environment variables. |
+
+Sensitive values (connection strings, storage keys) should never appear in the configuration file in plain text. Leave them empty in the file and supply them via the configured secret provider.
+
+### Key Vault secret naming convention
+
+| Secret name | Value |
+|---|---|
+| `mongocustody-mongo-connection-string` | MongoDB connection string |
+| `mongocustody-storage-connection-string` | Azure Blob Storage connection string (if not using managed identity endpoint) |
+
+---
+
+## Usage
+
+### As a Library
+
+#### Register with dependency injection
+
+```csharp
+// Program.cs or Startup.cs
+var config = builder.Configuration
+    .GetSection("MongoCustody")
+    .Get<MongoCustodyConfiguration>()!;
+
+builder.Services.AddMongoCustody(config);
+```
+
+#### Run a full backup
+
+```csharp
+public class BackupJob(IMongoCustodyService backupService)
+{
+    public async Task RunAsync(CancellationToken ct)
+    {
+        // Verify all connectors are reachable before starting
+        var health = await backupService.CheckHealthAsync(ct);
+        if (!health.IsHealthy)
+            throw new InvalidOperationException(
+                $"Health check failed: {health.Summary}");
+
+        var result = await backupService.RunFullBackupAsync(
+            new BackupRequest
+            {
+                Databases = ["your-database"],
+                TriggeredBy = "scheduler"
+            }, ct);
+
+        if (result.Status != BackupStatus.Completed)
+            throw new InvalidOperationException(
+                $"Full backup failed: {result.FailureReason}");
+    }
+}
+```
+
+#### Run an incremental backup
+
+```csharp
+var result = await backupService.RunIncrementalBackupAsync(
+    new BackupRequest
+    {
+        Databases = ["your-database"],
+        TriggeredBy = "scheduler"
+    }, ct);
+```
+
+#### Restore to a point in time
+
+```csharp
+var result = await backupService.RestoreAsync(
+    new RestoreRequest
+    {
+        DatabaseName = "your-database",
+        TargetDate = new DateTimeOffset(2025, 4, 15, 0, 0, 0, TimeSpan.Zero),
+        TargetConnectionString = "mongodb://restore-account...",
+        // Optional: restore only specific collections
+        Collections = ["collection-a", "collection-b"],   // optional subset
+        RequestedBy = "admin@example.com",
+        ApprovedBy = "compliance@example.com",
+        Reason = "Data recovery — incident INC-2025-0042"
+    }, ct);
+```
+
+#### Validate a backup
+
+```csharp
+var result = await backupService.ValidateBackupAsync(
+    new ValidationRequest
+    {
+        BackupId = "a3f8c2d1-...",
+        Levels = [
+            ValidationLevel.StructuralIntegrity,
+            ValidationLevel.CountConsistency
+        ]
+    }, ct);
+
+foreach (var collection in result.CollectionResults)
+    Console.WriteLine($"{collection.CollectionName}: {(collection.Passed ? "PASS" : "FAIL")}");
+```
+
+### As a CLI Tool
+
+```bash
+# Verify all connectors are reachable
+mongocustody health --config mongocustody.json
+
+# Run a full backup
+mongocustody backup full --config mongocustody.json --database your-database
+
+# Run an incremental backup
+mongocustody backup incremental --config mongocustody.json --database your-database
+
+# Generate a weekly checkpoint from the last 6 incrementals
+mongocustody backup checkpoint --config mongocustody.json --database your-database
+
+# Show the restore chain for a target date (dry run — no data written)
+mongocustody chain \
+  --config mongocustody.json \
+  --database your-database \
+  --target-date 2025-04-15
+
+# Restore to a target date
+mongocustody restore \
+  --config mongocustody.json \
+  --database your-database \
+  --target-date 2025-04-15 \
+  --target-connection-string "mongodb://restore-account..." \
+  --requested-by admin@example.com \
+  --approved-by compliance@example.com \
+  --reason "INC-2025-0042"
+
+# Restore a single collection only
+mongocustody restore \
+  --config mongocustody.json \
+  --database your-database \
+  --collection {collectionName} \
+  --target-date 2025-04-15 \
+  --target-connection-string "mongodb://restore-account..."
+
+# Validate a backup by ID
+mongocustody validate \
+  --config mongocustody.json \
+  --backup-id a3f8c2d1 \
+  --level structural,count
+
+# Output results as JSON (useful in scripts and CI)
+mongocustody backup full --config mongocustody.json --output json
+```
+
+---
+
+## Restore Procedure
+
+Restore is always two steps: apply the full backup, then replay subsequent operations in order.
+
+### Restore chain by scenario
+
+| Target | Operations required | Max chain depth |
+|---|---|---|
+| Quarter start (full backup date) | Full[Q] | 1 |
+| Specific day in week 1 (days 2–7) | Full[Q] + Inc[Day2..DayN] | 7 |
+| End of week 1 | Full[Q] + CKP[Week1] | 2 |
+| Specific day in week N | Full[Q] + CKP[Week1..N-1] + Inc[DayN] | 19 |
+| End of quarter | Full[Q] + CKP[Week1..13] | 14 |
+
+**Maximum chain depth: 19 operations.** Within each operation, collections are processed in parallel.
+
+### Upsert correctness
+
+All restore operations use `replaceOne` with `upsert: true` keyed on `_id`. This means:
+
+- A document in both the full backup and a subsequent incremental is upserted twice — the incremental (applied second) writes the more recent state. The result is correct.
+- A document soft-deleted after the full backup appears in an incremental with `isDeleted: true`. Upsert writes this final state correctly.
+- The 5-minute buffer may produce harmless duplicate upserts near anchor boundaries. These are idempotent.
+
+### Important: never restore into the production account
+
+Always restore to a new, empty target account. Verify counts and spot-check documents before any promotion step. The restore operation records a `RestoreRecord` (who requested, who approved, target date, reason) before any data is written.
+
+---
+
+## Validation
+
+MongoCustody provides four levels of validation, all of which read data without writing anything.
+
+| Level | What it checks | When it runs |
+|---|---|---|
+| **Structural Integrity** | SHA-256 hash of each collection blob matches the hash stored in the `BackupRecord` at write time | After every backup automatically |
+| **Count Consistency** | Document count in the backup matches a soft-delete-aware count query against the live database as of the anchor timestamp | After every full backup automatically |
+| **Incremental Completeness** | Document count in the incremental is ≥ the count of documents modified in the live database since the previous anchor | After every incremental automatically |
+| **Restore Dry-Run** | Full restore to an ephemeral account; verifies counts and spot-checks 100 random documents without promoting to production | Quarterly, or on demand |
+
+Run validation at any time via the library or CLI:
+
+```bash
+# Validate structural integrity and count consistency
+mongocustody validate --backup-id a3f8c2d1 --level structural,count
+
+# Full restore dry-run (requires a target account)
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level dry-run \
+  --target-connection-string "mongodb://ephemeral-account..."
+```
+
+---
+
+## HIPAA Compliance
+
+MongoCustody is designed to satisfy the following HIPAA Security Rule provisions for systems that handle ePHI:
+
+| Rule | Requirement | How addressed |
+|---|---|---|
+| §164.308(a)(7)(ii)(A) | Data backup plan | Quarterly full + daily incremental + weekly checkpoint |
+| §164.308(a)(7)(ii)(B) | Disaster recovery plan | Documented restore procedure; restore chain always resolvable |
+| §164.308(a)(7)(ii)(D) | Testing and revision | Quarterly restore dry-run with documented results |
+| §164.312(a)(1) | Access control | Managed identity; no shared keys; RBAC-scoped roles |
+| §164.312(b) | Audit controls | `BackupRecord` and `RestoreRecord` per operation with principal, timestamp, and correlation ID |
+| §164.312(c)(1) | Integrity | SHA-256 per collection blob; WORM immutability on storage |
+| §164.312(e)(1) | Transmission security | TLS enforced for all MongoDB and Blob Storage connections |
+| §164.530(j) | Documentation retention | Configurable retention; 6-year lifecycle policy supported |
+
+### PHI never appears in
+
+- Log messages (structured logging with explicit allowlists; no document content)
+- Error messages or exception details
+- Backup metadata documents (collection names, counts, hashes, and blob paths only)
+- Blob storage paths (dates, UUIDs, and collection names only — no PHI or record identifiers)
+
+### Authentication requirements
+
+MongoCustody is designed for managed identity access. Shared access keys and SAS tokens with long expiry are explicitly not supported for production use. The `EnvironmentSecretProvider` is provided for development and CI only.
+
+### Compliance documentation
+
+A full compliance document template covering backup architecture, HIPAA mapping, known gaps, and open items requiring compliance sign-off is maintained separately as `COMPLIANCE.md`. Organisations using MongoCustody in a regulated environment should review and adapt that document — substituting their own system name, database names, and Azure resource identifiers — before submitting for compliance review.
+
+### No metadata database required
+
+All backup metadata lives in `manifest.json` files in Blob Storage. There is no separate database dependency for backup or restore operations. If the source database is completely lost, restore proceeds directly from Blob Storage without any external service.
+
+---
+
+## Storage Layout
+
+```
+[backup-container]/                       ← WORM-enabled Blob Storage container
+│
+├── full/
+│   └── {year}/{quarter}/{backupId}/
+│       ├── {db}.{collection}.part-001.bson.gz   ← chunk 1 of N, BSON format
+│       ├── {db}.{collection}.part-002.bson.gz   ← chunk 2 of N (large collections)
+│       ├── ...
+│       └── manifest.json                        ← completion certificate; absent = failed
+│
+├── incremental/
+│   └── {year}/{quarter}/{fullBackupId}/
+│       └── {yyyy-MM-ddTHHmmZ}/                  ← ISO 8601 UTC e.g. 2025-01-03T0100Z
+│           ├── {db}.{collection}.part-001.bson.gz
+│           ├── ...
+│           └── manifest.json
+│
+└── checkpoint/
+    └── {year}/{quarter}/{fullBackupId}/
+        └── week-{nn}T{HHmmZ}/                   ← e.g. week-02T0200Z
+            ├── {db}.{collection}.part-001.bson.gz
+            ├── ...
+            └── manifest.json
+```
+
+All backup artifacts — chunks and manifests — are stored under a single container with WORM time-based retention. A folder containing chunks but no `manifest.json` represents a failed backup; a periodic cleanup process removes orphaned chunks older than 24 hours. Chunks must always be applied in ascending `part-NNN` order during restore. Lifecycle management policies tier blobs from Hot to Archive storage automatically based on age:
+
+| Age | Storage tier |
+|---|---|
+| 0–12 months | Hot |
+| 12+ months | Archive |
+| 6 years + buffer | Deleted |
+
+---
+
+## Development
+
+### Clone and build
+
+```bash
+git clone https://github.com/your-org/mongocustody.git
+cd mongocustody
+dotnet build
+```
+
+### Run unit tests (no infrastructure required)
+
+```bash
+dotnet test tests/MongoCustody.Core.Tests
+```
+
+### Run integration tests
+
+Integration tests require the Cosmos DB emulator and Azurite (Azure Blob Storage emulator).
+
+```bash
+# Start Azurite
+azurite --silent --location ./tmp/azurite
+
+# Start Cosmos DB emulator (see https://docs.microsoft.com/azure/cosmos-db/local-emulator)
+# Then run:
+dotnet test tests/MongoCustody.Connectors.Tests
+```
+
+Or use Docker Compose to start both emulators together:
+
+```bash
+docker compose -f tests/docker-compose.yml up -d
+dotnet test tests/MongoCustody.Connectors.Tests
+docker compose -f tests/docker-compose.yml down
+```
+
+---
+
+## Testing
+
+| Project | Type | Infrastructure |
+|---|---|---|
+| `MongoCustody.Core.Tests` | Unit — mocked connectors | None |
+| `MongoCustody.Connectors.Tests` | Integration — real I/O | Cosmos emulator + Azurite |
+
+Test framework: **MSTest v3** with source generators.
+
+Core logic tests (backup algorithm, restore chain resolution, validation rules, checkpoint merge deduplication) use mocked `IBackupSourceConnector`, `IStorageConnector`, and `IMetadataRepository`. They run in milliseconds with no external dependencies.
+
+Connector integration tests verify health checks, read/write round-trips, and end-to-end backup → validate → restore flows against real emulated infrastructure.
+
+---
+
+## Implementation Phases
+
+The library is being built in the following sequence. Each phase is independently releasable.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Models, abstractions, and configuration | Planned |
+| 2 | Connectors and health checks | Planned |
+| 3 | Full backup engine | Planned |
+| 4 | Validation engine (full backup) | Planned |
+| 5 | Full backup restore engine | Planned |
+| 6 | Incremental backup engine | Planned |
+| 7 | Incremental restore and validation | Planned |
+| 8 | Checkpoint engine | Planned |
+| 9 | DI wiring and public API | Planned |
+| 10 | CLI tool | Planned |
+
+---
+
+## Requirements
+
+- .NET 10 SDK or later
+- MongoDB 4.0+ or Azure Cosmos DB for MongoDB API (RU-based)
+- Azure Blob Storage (for backup artifact and metadata storage)
+- `DefaultAzureCredential`-compatible identity for production deployments (managed identity, workload identity, or `az login` for local development)
+
+---
+
+## License
+
+MIT License
+
+Copyright (c) 2026 MongoCustody Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## Contributing
+
+[To be determined]
