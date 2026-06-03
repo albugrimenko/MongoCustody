@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="../tests/MongoCustody.Connectors.Tests/MongoCustody.Connectors.Tests.csproj" />
+  <Project Path="../tests/MongoCustody.Core.Tests/MongoCustody.Core.Tests.csproj" />
+  <Project Path="MongoCustody.Cli/MongoCustody.Cli.csproj" />
+  <Project Path="MongoCustody.Connectors/MongoCustody.Connectors.csproj" />
+  <Project Path="MongoCustody.Core/MongoCustody.Core.csproj" />
+</Solution>
