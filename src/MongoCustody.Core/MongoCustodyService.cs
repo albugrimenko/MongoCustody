@@ -48,39 +48,45 @@ public sealed class MongoCustodyService : IMongoCustodyService
     /// <inheritdoc />
     public async Task<HealthCheckResult> CheckHealthAsync(CancellationToken ct = default)
     {
-        var checkedAt  = DateTimeOffset.UtcNow;
-        var components = new List<ComponentHealthResult>();
+        var checkedAt = DateTimeOffset.UtcNow;
 
-        var (sourceOk,  sourceMs,  sourceErr)  = await _source.CheckHealthAsync(ct).ConfigureAwait(false);
-        var (storageOk, storageMs, storageErr) = await _storage.CheckHealthAsync(ct).ConfigureAwait(false);
-        var (metaOk,    metaMs,    metaErr)    = await _metadata.CheckHealthAsync(ct).ConfigureAwait(false);
+        // Run all three probes in parallel — total latency is max, not sum.
+        var sourceTask  = _source.CheckHealthAsync(ct);
+        var storageTask = _storage.CheckHealthAsync(ct);
+        var metaTask    = _metadata.CheckHealthAsync(ct);
+        await Task.WhenAll(sourceTask, storageTask, metaTask).ConfigureAwait(false);
 
-        components.Add(new ComponentHealthResult
-        {
-            ComponentName = "MongoDB",
-            IsHealthy     = sourceOk,
-            LatencyMs     = sourceMs,
-            ErrorMessage  = sourceErr
-        });
-        components.Add(new ComponentHealthResult
-        {
-            ComponentName = "BlobStorage",
-            IsHealthy     = storageOk,
-            LatencyMs     = storageMs,
-            ErrorMessage  = storageErr
-        });
-        components.Add(new ComponentHealthResult
-        {
-            ComponentName = "MetadataRepository",
-            IsHealthy     = metaOk,
-            LatencyMs     = metaMs,
-            ErrorMessage  = metaErr
-        });
+        var (sourceOk,  sourceMs,  sourceErr)  = await sourceTask;
+        var (storageOk, storageMs, storageErr) = await storageTask;
+        var (metaOk,    metaMs,    metaErr)    = await metaTask;
 
         return new HealthCheckResult
         {
-            CheckedAtUtc     = checkedAt,
-            ComponentResults = components
+            CheckedAtUtc = checkedAt,
+            ComponentResults =
+            [
+                new ComponentHealthResult
+                {
+                    ComponentName = "MongoDB",
+                    IsHealthy     = sourceOk,
+                    LatencyMs     = sourceMs,
+                    ErrorMessage  = sourceErr
+                },
+                new ComponentHealthResult
+                {
+                    ComponentName = "BlobStorage",
+                    IsHealthy     = storageOk,
+                    LatencyMs     = storageMs,
+                    ErrorMessage  = storageErr
+                },
+                new ComponentHealthResult
+                {
+                    ComponentName = "MetadataRepository",
+                    IsHealthy     = metaOk,
+                    LatencyMs     = metaMs,
+                    ErrorMessage  = metaErr
+                }
+            ]
         };
     }
 
@@ -89,12 +95,38 @@ public sealed class MongoCustodyService : IMongoCustodyService
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
-    public Task<BackupResult> RunFullBackupAsync(
+    public async Task<BackupResult> RunFullBackupAsync(
         BackupRequest request,
         CancellationToken ct = default)
     {
+        var startedAt = DateTimeOffset.UtcNow;
+
+        // Pre-flight health check — fail fast before any blobs are created.
+        var health = await CheckHealthAsync(ct).ConfigureAwait(false);
+        if (!health.IsHealthy)
+        {
+            var unhealthyComponents = health.ComponentResults
+                .Where(c => !c.IsHealthy)
+                .Select(c => $"{c.ComponentName}: {c.ErrorMessage}");
+
+            return new BackupResult
+            {
+                BackupId        = Guid.NewGuid().ToString(),
+                BackupType      = BackupType.Full,
+                Status          = BackupStatus.Failed,
+                StartedAtUtc    = startedAt,
+                CompletedAtUtc  = DateTimeOffset.UtcNow,
+                FailureReason   = "Pre-flight health check failed — " +
+                                  string.Join("; ", unhealthyComponents),
+                DatabaseResults = [],
+                CorrelationId   = string.IsNullOrWhiteSpace(request.CorrelationId)
+                                  ? Guid.NewGuid().ToString()
+                                  : request.CorrelationId
+            };
+        }
+
         var engine = new FullBackupEngine(_source, _storage, _metadata, _config);
-        return engine.RunAsync(request, ct);
+        return await engine.RunAsync(request, ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ //

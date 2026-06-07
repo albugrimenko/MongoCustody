@@ -1,3 +1,5 @@
+using MongoCustody.Core.Engines;
+
 namespace MongoCustody.Connectors;
 
 /// <summary>
@@ -7,112 +9,61 @@ namespace MongoCustody.Connectors;
 ///
 /// All paths are relative to the container root and use forward-slash
 /// separators regardless of the host OS.
+///
+/// Path-building logic shared with the Core backup engines is delegated
+/// to <see cref="BackupPathBuilder"/> — the single source of truth for
+/// the path format contract. Connector-specific paths (index, restore
+/// request, quarter listing prefixes) are defined here.
 /// </summary>
 internal static class StoragePathHelper
 {
-    internal const string ManifestFileName = "manifest.json";
+    internal const string ManifestFileName       = BackupPathBuilder.ManifestFileName;
     internal const string RestoreRequestFileName = "restore-request.json";
-    internal const string IndexPrefix = "_index/";
+    internal const string IndexPrefix            = "_index/";
 
     // ------------------------------------------------------------------ //
-    //  Quarter helpers
+    //  Quarter helpers — delegate to BackupPathBuilder (single source of truth)
     // ------------------------------------------------------------------ //
 
-    /// <summary>
-    /// Returns the quarter label for a given UTC date, e.g. <c>2025-Q1</c>.
-    /// </summary>
     internal static string QuarterLabel(DateTimeOffset utc)
-    {
-        int q = ((utc.Month - 1) / 3) + 1;
-        return $"{utc.Year}-Q{q}";
-    }
+        => BackupPathBuilder.QuarterLabel(utc);
 
-    /// <summary>
-    /// Returns the 1-based week number within the quarter (1–13) for a
-    /// given UTC date. Week 1 starts on the first day of the quarter.
-    /// </summary>
     internal static int WeekOfQuarter(DateTimeOffset utc)
-    {
-        var quarterStart = QuarterStart(utc);
-        int dayOfQuarter = (int)(utc.Date - quarterStart.Date).TotalDays;
-        return (dayOfQuarter / 7) + 1;
-    }
+        => BackupPathBuilder.WeekOfQuarter(utc);
 
-    /// <summary>
-    /// Returns midnight UTC of the first day of the quarter containing
-    /// the supplied date.
-    /// </summary>
     internal static DateTimeOffset QuarterStart(DateTimeOffset utc)
-    {
-        int startMonth = ((utc.Month - 1) / 3 * 3) + 1;
-        return new DateTimeOffset(utc.Year, startMonth, 1, 0, 0, 0, TimeSpan.Zero);
-    }
+        => BackupPathBuilder.QuarterStart(utc);
 
     // ------------------------------------------------------------------ //
-    //  Folder paths
+    //  Folder paths — delegate to BackupPathBuilder
     // ------------------------------------------------------------------ //
 
-    /// <summary>
-    /// <c>full/{year}/Q{q}/{backupId}/</c>
-    /// </summary>
     internal static string FullBackupFolder(DateTimeOffset utc, string backupId)
-    {
-        int q = ((utc.Month - 1) / 3) + 1;
-        return $"full/{utc.Year}/Q{q}/{backupId}/";
-    }
+        => BackupPathBuilder.FullBackupFolder(utc, backupId);
 
-    /// <summary>
-    /// <c>incremental/{year}/Q{q}/{fullBackupId}/{yyyy-MM-ddTHHmmZ}/</c>
-    /// The timestamp is truncated to the minute and formatted in ISO 8601 UTC.
-    /// Lexicographic sort order equals chronological order.
-    /// </summary>
-    internal static string IncrementalBackupFolder(
-        DateTimeOffset utc,
-        string fullBackupId)
-    {
-        int q = ((utc.Month - 1) / 3) + 1;
-        string ts = utc.ToUniversalTime().ToString("yyyy-MM-ddTHHmmZ");
-        return $"incremental/{utc.Year}/Q{q}/{fullBackupId}/{ts}/";
-    }
+    internal static string IncrementalBackupFolder(DateTimeOffset utc, string fullBackupId)
+        => BackupPathBuilder.IncrementalBackupFolder(utc, fullBackupId);
 
-    /// <summary>
-    /// <c>checkpoint/{year}/Q{q}/{fullBackupId}/week-{nn}T{HHmmZ}/</c>
-    /// </summary>
-    internal static string CheckpointFolder(
-        DateTimeOffset utc,
-        string fullBackupId,
-        int weekNumber)
-    {
-        int q = ((utc.Month - 1) / 3) + 1;
-        string time = utc.ToUniversalTime().ToString("HHmmZ");
-        return $"checkpoint/{utc.Year}/Q{q}/{fullBackupId}/week-{weekNumber:D2}T{time}/";
-    }
+    internal static string CheckpointFolder(DateTimeOffset utc, string fullBackupId, int weekNumber)
+        => BackupPathBuilder.CheckpointFolder(utc, fullBackupId, weekNumber);
 
     // ------------------------------------------------------------------ //
-    //  Blob paths
+    //  Blob paths — delegate shared paths; define Connector-specific ones
     // ------------------------------------------------------------------ //
 
-    /// <summary>
-    /// Returns the blob path for a numbered chunk file within a backup folder.
-    /// <example><c>full/2025/Q1/{id}/{db}.{col}.part-001.bson.gz</c></example>
-    /// </summary>
     internal static string ChunkBlobPath(
         string folderPath,
         string databaseName,
         string collectionName,
         int chunkIndex)
-        => $"{folderPath}{databaseName}.{collectionName}.part-{chunkIndex:D3}.bson.gz";
+        => BackupPathBuilder.ChunkBlobPath(folderPath, databaseName, collectionName, chunkIndex);
 
-    /// <summary>
-    /// Returns the <c>manifest.json</c> blob path for a backup folder.
-    /// </summary>
     internal static string ManifestBlobPath(string folderPath)
-        => $"{folderPath}{ManifestFileName}";
+        => BackupPathBuilder.ManifestBlobPath(folderPath);
 
     /// <summary>
-    /// Returns the <c>restore-request.json</c> blob path for a restore
-    /// folder. The restore folder mirrors the full backup folder path
-    /// with a <c>restores/{restoreId}/</c> suffix.
+    /// Returns the <c>restore-request.json</c> blob path for a restore ID.
+    /// <example><c>restores/{restoreId}/restore-request.json</c></example>
     /// </summary>
     internal static string RestoreRequestBlobPath(string restoreId)
         => $"restores/{restoreId}/{RestoreRequestFileName}";
@@ -125,7 +76,7 @@ internal static class StoragePathHelper
         => $"{IndexPrefix}{backupId}";
 
     // ------------------------------------------------------------------ //
-    //  Container listing prefixes
+    //  Container listing prefixes (Connector-specific)
     // ------------------------------------------------------------------ //
 
     /// <summary>
@@ -133,9 +84,7 @@ internal static class StoragePathHelper
     /// to a given full backup within a quarter.
     /// <example><c>incremental/2025/Q1/{fullBackupId}/</c></example>
     /// </summary>
-    internal static string IncrementalQuarterPrefix(
-        DateTimeOffset utc,
-        string fullBackupId)
+    internal static string IncrementalQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
         int q = ((utc.Month - 1) / 3) + 1;
         return $"incremental/{utc.Year}/Q{q}/{fullBackupId}/";
@@ -144,10 +93,9 @@ internal static class StoragePathHelper
     /// <summary>
     /// Returns the listing prefix for all checkpoint folders that belong
     /// to a given full backup within a quarter.
+    /// <example><c>checkpoint/2025/Q1/{fullBackupId}/</c></example>
     /// </summary>
-    internal static string CheckpointQuarterPrefix(
-        DateTimeOffset utc,
-        string fullBackupId)
+    internal static string CheckpointQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
         int q = ((utc.Month - 1) / 3) + 1;
         return $"checkpoint/{utc.Year}/Q{q}/{fullBackupId}/";
@@ -164,7 +112,6 @@ internal static class StoragePathHelper
     /// </summary>
     internal static DateTimeOffset? ParseIncrementalFolderTimestamp(string folderPath)
     {
-        // Last non-empty segment is the timestamp folder name
         var segment = folderPath.TrimEnd('/').Split('/').LastOrDefault();
         if (segment is null) return null;
 

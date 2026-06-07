@@ -128,11 +128,14 @@ internal sealed class ChunkWriter
             .OpenWriteAsync(blobPath, ct)
             .ConfigureAwait(false);
 
+        // ByteCountingStream sits between GZip and the blob stream so we
+        // capture compressed byte counts without buffering any data.
+        var counter    = new ByteCountingStream(blobStream);
         var sha256     = SHA256.Create();
         var hashStream = new HashStream(sha256);
-        var gzip       = new GZipStream(blobStream, _compressionLevel, leaveOpen: false);
+        var gzip       = new GZipStream(counter, _compressionLevel, leaveOpen: false);
 
-        // Wire: caller writes to hashStream → bytes forwarded to gzip → blobStream
+        // Wire: caller writes to hashStream → bytes forwarded to gzip → counter → blobStream
         hashStream.SetForwardTarget(gzip);
 
         return new ChunkState
@@ -140,6 +143,7 @@ internal sealed class ChunkWriter
             BlobPath   = blobPath,
             HashStream = hashStream,
             Gzip       = gzip,
+            Counter    = counter,
             Sha256     = sha256
         };
     }
@@ -176,7 +180,7 @@ internal sealed class ChunkWriter
             BlobPath      = state.BlobPath,
             DocumentCount = state.DocumentCount,
             Sha256Hash    = hexHash,
-            SizeBytes     = 0   // Azure block-blob streams are not seekable; size is informational
+            SizeBytes     = state.Counter.BytesWritten
         };
     }
 
@@ -186,13 +190,81 @@ internal sealed class ChunkWriter
 
     private sealed class ChunkState
     {
-        internal required string     BlobPath          { get; init; }
-        internal required HashStream HashStream        { get; init; }
-        internal required GZipStream Gzip              { get; init; }
-        internal required SHA256     Sha256            { get; init; }
+        internal required string            BlobPath          { get; init; }
+        internal required HashStream        HashStream        { get; init; }
+        internal required GZipStream        Gzip              { get; init; }
+        internal required ByteCountingStream Counter          { get; init; }
+        internal required SHA256            Sha256            { get; init; }
 
         internal long UncompressedBytes { get; set; }
         internal long DocumentCount     { get; set; }
+    }
+}
+
+// --------------------------------------------------------------------------
+//  ByteCountingStream — forwards writes to an inner stream and counts bytes
+// --------------------------------------------------------------------------
+
+/// <summary>
+/// A write-only <see cref="Stream"/> that delegates every write to an inner
+/// stream and accumulates the total number of bytes written in
+/// <see cref="BytesWritten"/>. Used to measure the compressed size of each
+/// chunk blob after the <see cref="GZipStream"/> layer, without buffering.
+/// </summary>
+internal sealed class ByteCountingStream : Stream
+{
+    private readonly Stream _inner;
+
+    internal long BytesWritten { get; private set; }
+
+    internal ByteCountingStream(Stream inner) => _inner = inner;
+
+    public override bool CanRead  => false;
+    public override bool CanSeek  => false;
+    public override bool CanWrite => true;
+    public override long Length   => throw new NotSupportedException();
+    public override long Position
+    {
+        get => throw new NotSupportedException();
+        set => throw new NotSupportedException();
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        _inner.Write(buffer, offset, count);
+        BytesWritten += count;
+    }
+
+    public override async Task WriteAsync(
+        byte[] buffer, int offset, int count, CancellationToken ct)
+    {
+        await _inner.WriteAsync(buffer, offset, count, ct).ConfigureAwait(false);
+        BytesWritten += count;
+    }
+
+    public override async ValueTask WriteAsync(
+        ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+    {
+        await _inner.WriteAsync(buffer, ct).ConfigureAwait(false);
+        BytesWritten += buffer.Length;
+    }
+
+    public override void  Flush() => _inner.Flush();
+    public override Task  FlushAsync(CancellationToken ct) => _inner.FlushAsync(ct);
+    public override void  SetLength(long value) => throw new NotSupportedException();
+    public override long  Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override int   Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _inner.Dispose();
+        base.Dispose(disposing);
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await _inner.DisposeAsync().ConfigureAwait(false);
+        await base.DisposeAsync().ConfigureAwait(false);
     }
 }
 
