@@ -7,12 +7,12 @@ Created on: 2025-01-XX
 ```
 D:\Repos\MongoCustody\
 ├── src\
-│   ├── MongoCustody.sln                    # Main solution file
+│   ├── MongoCustody.slnx                   # Main solution file
 │   │
 │   ├── MongoCustody.Core\                  # Core business logic (no Azure dependencies)
-│   │   ├── Abstractions\                   # Interfaces (IBackupEngine, IStorageConnector, etc.)
+│   │   ├── Abstractions\                   # Interfaces (IBackupSourceConnector, IStorageConnector, etc.)
 │   │   ├── Models\                         # DTOs, configuration, request/response types
-│   │   ├── Engines\                        # BackupEngine, RestoreEngine, ValidationEngine, CheckpointEngine
+│   │   ├── Engines\                        # FullBackupEngine, BackupPathBuilder, ChunkWriter
 │   │   ├── Extensions\                     # IServiceCollection extension methods
 │   │   └── MongoCustody.Core.csproj        # .NET 10.0 class library
 │   │
@@ -20,7 +20,7 @@ D:\Repos\MongoCustody\
 │   │   ├── Secrets\                        # Secret providers (KeyVault, Environment)
 │   │   ├── MongoDbConnector.cs             # IBackupSourceConnector implementation
 │   │   ├── BlobStorageConnector.cs         # IStorageConnector implementation
-│   │   ├── CosmosMetadataRepository.cs     # IMetadataRepository implementation
+│   │   ├── BlobMetadataRepository.cs       # IMetadataRepository — manifests live in Blob Storage
 │   │   └── MongoCustody.Connectors.csproj  # References: MongoCustody.Core
 │   │
 │   └── MongoCustody.Cli\                   # Command-line tool
@@ -32,7 +32,7 @@ D:\Repos\MongoCustody\
 	├── MongoCustody.Core.Tests\            # Unit tests (no infrastructure)
 	│   └── MongoCustody.Core.Tests.csproj  # MSTest, references Core
 	│
-	└── MongoCustody.Connectors.Tests\      # Integration tests (Cosmos emulator + Azurite)
+	└── MongoCustody.Connectors.Tests\      # Integration tests (Azurite + MongoDB)
 		└── MongoCustody.Connectors.Tests.csproj  # MSTest, references Core + Connectors
 ```
 
@@ -85,9 +85,11 @@ MongoCustody.Connectors.Tests
 
 According to the README.md Implementation Phases:
 
-1. **Phase 1** - Models, abstractions, and configuration
-2. **Phase 2** - Connectors and health checks
-3. **Phase 3** - Full backup engine
+1. **Phase 1** - Models, abstractions, and configuration ✅
+2. **Phase 2** - Connectors and health checks ✅
+1. **Phase 1** - Models, abstractions, and configuration ✅
+2. **Phase 2** - Connectors and health checks ✅
+3. **Phase 3** - Full backup engine ✅
 4. **Phase 4** - Validation engine (full backup)
 5. **Phase 5** - Full backup restore engine
 6. **Phase 6** - Incremental backup engine
@@ -108,20 +110,14 @@ According to the README.md Implementation Phases:
 
 ```bash
 # Build entire solution
-cd D:\Repos\MongoCustody\src
-dotnet build
+dotnet build src\MongoCustody.slnx
 
-# Build specific project
-dotnet build MongoCustody.Core\MongoCustody.Core.csproj
+# Run all non-integration tests (no infrastructure required)
+dotnet test src\MongoCustody.slnx --filter "Category!=Integration"
 
-# Run all tests
-dotnet test
-
-# Run only unit tests (fast, no infrastructure)
-dotnet test ..\tests\MongoCustody.Core.Tests\MongoCustody.Core.Tests.csproj
-
-# Run integration tests (requires Cosmos emulator + Azurite)
-dotnet test ..\tests\MongoCustody.Connectors.Tests\MongoCustody.Connectors.Tests.csproj
+# Run integration tests (requires: docker compose -f tests/docker-compose.yml up -d)
+$env:MONGOCUSTODY_INTEGRATION_TESTS = "1"
+dotnet test tests\MongoCustody.Connectors.Tests --filter "Category=Integration"
 ```
 
 ## Notes

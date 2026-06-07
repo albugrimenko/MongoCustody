@@ -16,7 +16,7 @@ namespace MongoCustody.Connectors;
 ///
 /// The connection string is resolved lazily from the secret provider
 /// using the key <c>mongocustody-mongo-connection-string</c>.
-/// If the secret is absent, <see cref="MongoCustodyConfiguration.CosmosAccountEndpoint"/>
+/// If the secret is absent, <see cref="MongoCustodyConfiguration.MongoDBAccountEndpoint"/>
 /// is used as the connection string (useful for Cosmos DB managed identity
 /// endpoints that embed no credentials).
 /// </summary>
@@ -210,7 +210,7 @@ public sealed class MongoDbConnector : IBackupSourceConnector
                 .ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(connectionString))
-                connectionString = _config.CosmosAccountEndpoint;
+                connectionString = _config.MongoDBAccountEndpoint;
 
             _client = new MongoClient(connectionString);
             return _client;

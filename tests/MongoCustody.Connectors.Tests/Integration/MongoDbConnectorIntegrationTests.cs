@@ -27,7 +27,7 @@ public sealed class MongoDbConnectorIntegrationTests : IntegrationTestBase
 
         var config = new MongoCustodyConfiguration
         {
-            CosmosAccountEndpoint = MongoLocalConnectionString,
+            MongoDBAccountEndpoint = MongoLocalConnectionString,
             Databases =
             [
                 new DatabaseConfiguration

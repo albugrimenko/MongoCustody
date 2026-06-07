@@ -9,11 +9,11 @@ namespace MongoCustody.Core.Models;
 public sealed class MongoCustodyConfiguration
 {
     /// <summary>
-    /// Connection endpoint for the Azure Cosmos DB for MongoDB account
+    /// Connection endpoint for the MongoDB account
     /// that hosts the source data to be backed up.
     /// Example: <c>https://your-account.mongo.cosmos.azure.com:10255</c>
     /// </summary>
-    public string CosmosAccountEndpoint { get; set; } = string.Empty;
+    public string MongoDBAccountEndpoint { get; set; } = string.Empty;
 
     /// <summary>
     /// Endpoint URL of the Azure Blob Storage account used to store
@@ -28,15 +28,6 @@ public sealed class MongoCustodyConfiguration
     /// Default: <c>backups</c>.
     /// </summary>
     public string StorageContainerName { get; set; } = "backups";
-
-    /// <summary>
-    /// Name of the MongoDB database used to store backup metadata.
-    /// This database lives in the same Cosmos DB account as the source data
-    /// and stores <see cref="BackupRecord"/> and
-    /// <see cref="RestoreRecord"/> documents.
-    /// Default: <c>_backup_metadata</c>.
-    /// </summary>
-    public string MetadataDatabaseName { get; set; } = "_backup_metadata";
 
     /// <summary>
     /// One or more databases to include in backup operations.

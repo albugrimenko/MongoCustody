@@ -100,10 +100,10 @@ MongoCustody/
 │   │   │                              #   ValidationEngine, CheckpointEngine
 │   │   └── Extensions/                # IServiceCollection wiring
 │   │
-│   ├── MongoCustody.Connectors/       # Azure SDK implementations
+   ├── MongoCustody.Connectors/       # Azure SDK implementations
 │   │   ├── MongoDbConnector           # IBackupSourceConnector
 │   │   ├── BlobStorageConnector       # IStorageConnector
-│   │   ├── CosmosMetadataRepository   # IMetadataRepository
+│   │   ├── BlobMetadataRepository     # IMetadataRepository — manifests live in Blob Storage
 │   │   └── Secrets/
 │   │       ├── AzureKeyVaultSecretProvider
 │   │       └── EnvironmentSecretProvider
@@ -117,7 +117,7 @@ MongoCustody/
 │
 └── tests/
     ├── MongoCustody.Core.Tests/       # Unit tests — no infrastructure required
-    └── MongoCustody.Connectors.Tests/ # Integration tests — Cosmos emulator + Azurite
+    └── MongoCustody.Connectors.Tests/ # Integration tests — Azurite + MongoDB (docker-compose)
 ```
 
 `MongoCustody.Core` has zero Azure SDK dependencies. All backup logic — the export algorithm, restore chain resolution, validation rules, and checkpoint merge — lives here and is testable with plain mocks, no emulator required.
@@ -132,8 +132,7 @@ MongoCustody/
 
 - .NET 10 SDK
 - A MongoDB-compatible database (MongoDB 4.0+ or Azure Cosmos DB for MongoDB API)
-- Azure Blob Storage account (for backup artifact storage)
-- A Cosmos DB for MongoDB account or MongoDB instance for backup metadata storage
+- Azure Blob Storage account (for backup artifact and manifest storage)
 
 ### Install the CLI tool
 
@@ -158,10 +157,9 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a JSON fil
 
 ```json
 {
-  "cosmosAccountEndpoint": "https://your-account.mongo.cosmos.azure.com:10255",
+  "mongoDBAccountEndpoint": "https://your-account.mongo.cosmos.azure.com:10255",
   "storageAccountEndpoint": "https://yourbackupstorage.blob.core.windows.net",
   "storageContainerName": "backups",
-  "metadataDatabaseName": "_backup_metadata",
   "databases": [
     {
       "databaseName": "your-database",
@@ -486,23 +484,33 @@ dotnet test tests/MongoCustody.Core.Tests
 
 ### Run integration tests
 
-Integration tests require the Cosmos DB emulator and Azurite (Azure Blob Storage emulator).
+Integration tests require Azurite (Azure Blob Storage emulator) and MongoDB. The easiest way is Docker Compose:
 
 ```bash
-# Start Azurite
-azurite --silent --location ./tmp/azurite
+# Start Azurite and MongoDB
+docker compose -f tests/docker-compose.yml up -d
 
-# Start Cosmos DB emulator (see https://docs.microsoft.com/azure/cosmos-db/local-emulator)
-# Then run:
-dotnet test tests/MongoCustody.Connectors.Tests
+# PowerShell
+$env:MONGOCUSTODY_INTEGRATION_TESTS = "1"
+dotnet test tests/MongoCustody.Connectors.Tests --filter "Category=Integration"
+
+# bash / zsh
+MONGOCUSTODY_INTEGRATION_TESTS=1 dotnet test tests/MongoCustody.Connectors.Tests --filter "Category=Integration"
+
+# Tear down when done
+docker compose -f tests/docker-compose.yml down
 ```
 
-Or use Docker Compose to start both emulators together:
+Without the environment variable, integration tests are automatically marked **Inconclusive** (not failed), so CI pipelines that have no emulators stay green.
+
+If you prefer to manage the processes yourself:
 
 ```bash
-docker compose -f tests/docker-compose.yml up -d
-dotnet test tests/MongoCustody.Connectors.Tests
-docker compose -f tests/docker-compose.yml down
+# Azurite — available as an npm package or standalone binary
+azurite --blobHost 127.0.0.1 --blobPort 10000 --loose --silent --location ./tmp/azurite
+
+# MongoDB — any 4.0+ instance on localhost:27017 is sufficient
+mongod --dbpath ./tmp/mongo
 ```
 
 ---
@@ -512,13 +520,15 @@ docker compose -f tests/docker-compose.yml down
 | Project | Type | Infrastructure |
 |---|---|---|
 | `MongoCustody.Core.Tests` | Unit — mocked connectors | None |
-| `MongoCustody.Connectors.Tests` | Integration — real I/O | Cosmos emulator + Azurite |
+| `MongoCustody.Connectors.Tests` | Integration — real I/O | Azurite (Blob Storage) + MongoDB |
 
 Test framework: **MSTest v3** with source generators.
 
 Core logic tests (backup algorithm, restore chain resolution, validation rules, checkpoint merge deduplication) use mocked `IBackupSourceConnector`, `IStorageConnector`, and `IMetadataRepository`. They run in milliseconds with no external dependencies.
 
-Connector integration tests verify health checks, read/write round-trips, and end-to-end backup → validate → restore flows against real emulated infrastructure.
+Connector integration tests verify health checks, read/write round-trips, and end-to-end backup → validate → restore flows against real emulated infrastructure. They are gated by the `MONGOCUSTODY_INTEGRATION_TESTS` environment variable and tagged `Category=Integration`, so they never run in standard CI unless explicitly opted in.
+
+`BlobMetadataRepository` stores all backup and restore records as `manifest.json` files inside the same Blob Storage container used for backup artifacts. There is no separate metadata database. Lookup is done through a lightweight `_index/{backupId}` pointer blob written alongside each manifest.
 
 ---
 
@@ -528,8 +538,8 @@ The library is being built in the following sequence. Each phase is independentl
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Models, abstractions, and configuration | Planned |
-| 2 | Connectors and health checks | Planned |
+| 1 | Models, abstractions, and configuration | ✅ Complete |
+| 2 | Connectors and health checks | ✅ Complete |
 | 3 | Full backup engine | Planned |
 | 4 | Validation engine (full backup) | Planned |
 | 5 | Full backup restore engine | Planned |

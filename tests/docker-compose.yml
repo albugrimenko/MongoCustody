@@ -1,0 +1,60 @@
+# Docker Compose for MongoCustody integration tests.
+#
+# Starts Azurite (Azure Blob Storage emulator) and MongoDB side-by-side
+# so that MongoCustody.Connectors.Tests integration tests can run without
+# any cloud accounts or manually managed local processes.
+#
+# Usage:
+#   docker compose -f tests/docker-compose.yml up -d
+#   $env:MONGOCUSTODY_INTEGRATION_TESTS = "1"         # PowerShell
+#   dotnet test src/MongoCustody.sln --filter "Category=Integration"
+#   docker compose -f tests/docker-compose.yml down
+#
+# All data is ephemeral — volumes are destroyed on `down`.
+# Nothing in this file should ever be used for production configuration.
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Azurite — Azure Blob Storage emulator
+  # Exposes the well-known Azurite default account on the standard ports:
+  #   Blob:  10000
+  #   Queue: 10001  (unused by MongoCustody but included for completeness)
+  #   Table: 10002  (unused)
+  #
+  # The integration tests use the well-known Azurite connection string:
+  #   AccountName=devstoreaccount1
+  #   AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
+  #   BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1
+  # --------------------------------------------------------------------------
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: mongocustody-azurite
+    ports:
+      - "10000:10000"   # Blob
+      - "10001:10001"   # Queue
+      - "10002:10002"   # Table
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --loose
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "10000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --------------------------------------------------------------------------
+  # MongoDB 7 — source database emulator
+  # Exposes the default MongoDB port 27017 on localhost.
+  # No authentication — suitable for local integration testing only.
+  # --------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7
+    container_name: mongocustody-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: _mongocustody_integration_test
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

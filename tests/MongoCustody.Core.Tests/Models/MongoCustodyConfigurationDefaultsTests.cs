@@ -11,13 +11,6 @@ public sealed class MongoCustodyConfigurationDefaultsTests
     }
 
     [TestMethod]
-    public void DefaultMetadataDatabaseName_IsBackupMetadata()
-    {
-        var config = new MongoCustodyConfiguration();
-        Assert.AreEqual("_backup_metadata", config.MetadataDatabaseName);
-    }
-
-    [TestMethod]
     public void DefaultDatabases_IsEmpty()
     {
         var config = new MongoCustodyConfiguration();
