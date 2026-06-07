@@ -152,15 +152,20 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var collection = await GetCollectionAsync(databaseName, collectionName, ct)
             .ConfigureAwait(false);
 
-        // Soft-delete-aware count:
-        // documents that were NOT deleted, OR were deleted AFTER anchorTs
-        // (i.e. still existed at the time the backup was taken)
-        var filter = Builders<BsonDocument>.Filter.Or(
+        // Counts live documents modified after anchorTs — used for Level 3
+        // (Incremental Completeness) validation: how many documents changed
+        // since the last anchor and still exist (i.e. were not soft-deleted).
+        //
+        //   _ts > anchorTs          — modified after the anchor
+        //   isDeleted absent/false  — document is still live
+        var notDeleted = Builders<BsonDocument>.Filter.Or(
             Builders<BsonDocument>.Filter.Not(
                 Builders<BsonDocument>.Filter.Exists("isDeleted")),
-            Builders<BsonDocument>.Filter.Eq("isDeleted", false),
-            Builders<BsonDocument>.Filter.Gt("_ts", anchorTs)
-        );
+            Builders<BsonDocument>.Filter.Eq("isDeleted", false));
+
+        var filter = Builders<BsonDocument>.Filter.And(
+            Builders<BsonDocument>.Filter.Gt("_ts", anchorTs),
+            notDeleted);
 
         return await collection
             .CountDocumentsAsync(filter, cancellationToken: ct)
@@ -200,9 +205,12 @@ public sealed class MongoDbConnector : IBackupSourceConnector
     {
         if (_client is not null) return _client;
 
-        await _initLock.WaitAsync(ct).ConfigureAwait(false);
+        bool acquired = false;
         try
         {
+            await _initLock.WaitAsync(ct).ConfigureAwait(false);
+            acquired = true;
+
             if (_client is not null) return _client;
 
             var connectionString = await _secretProvider
@@ -217,7 +225,7 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         }
         finally
         {
-            _initLock.Release();
+            if (acquired) _initLock.Release();
         }
     }
 

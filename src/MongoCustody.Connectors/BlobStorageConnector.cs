@@ -203,9 +203,12 @@ public sealed class BlobStorageConnector : IStorageConnector
     {
         if (_container is not null) return _container;
 
-        await _initLock.WaitAsync(ct).ConfigureAwait(false);
+        bool acquired = false;
         try
         {
+            await _initLock.WaitAsync(ct).ConfigureAwait(false);
+            acquired = true;
+
             if (_container is not null) return _container;
 
             var connectionString = await _secretProvider
@@ -239,7 +242,7 @@ public sealed class BlobStorageConnector : IStorageConnector
         }
         finally
         {
-            _initLock.Release();
+            if (acquired) _initLock.Release();
         }
     }
 }

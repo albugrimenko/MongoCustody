@@ -47,6 +47,13 @@ public sealed class DatabaseBackupResult
     /// <summary>Name of the database.</summary>
     public string DatabaseName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The unique backup ID assigned to this database's <see cref="BackupRecord"/>.
+    /// Pass this to <c>IMetadataRepository.GetBackupRecordAsync</c> to retrieve
+    /// the full manifest for this database.
+    /// </summary>
+    public string BackupId { get; set; } = string.Empty;
+
     /// <summary>Terminal status for this database within the backup run.</summary>
     public BackupStatus Status { get; set; }
 

@@ -156,23 +156,27 @@ internal sealed class ChunkWriter
         // 1. Flush any pending writes through HashStream → GZip
         await state.HashStream.FlushAsync(ct).ConfigureAwait(false);
 
-        // 2. Finalise the SHA-256 hash (calls TransformFinalBlock).
-        //    Must happen BEFORE reading .Hash and BEFORE closing GZip,
-        //    because GZipStream.DisposeAsync will close the underlying
-        //    blob stream — after which we only need the already-computed hash.
+        // 2. Finalise the SHA-256 hash (calls TransformFinalBlock) and read
+        //    the digest immediately — before Gzip.DisposeAsync(), which may
+        //    throw on a network error. Reading here guarantees the hash is
+        //    captured even if the blob-commit step fails.
         state.HashStream.Dispose();
-
-        // 3. Close GZipStream: writes the gzip footer to the blob stream
-        //    and (leaveOpen:false) disposes it, which commits the Azure
-        //    block-blob upload.
-        await state.Gzip.DisposeAsync().ConfigureAwait(false);
-
-        // 4. Read the now-finalised hash
         var hashBytes = state.Sha256.Hash
             ?? throw new InvalidOperationException("SHA-256 hash not available after finalising chunk.");
         var hexHash = Convert.ToHexStringLower(hashBytes);
 
-        state.Sha256.Dispose();
+        // 3. Close GZipStream: writes the gzip footer to the blob stream
+        //    and (leaveOpen:false) disposes it, which commits the Azure
+        //    block-blob upload. SHA-256 is disposed in the finally so the
+        //    unmanaged handle is always released, even if the commit throws.
+        try
+        {
+            await state.Gzip.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            state.Sha256.Dispose();
+        }
 
         return new ChunkRecord
         {

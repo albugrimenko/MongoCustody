@@ -85,15 +85,18 @@ public interface IBackupSourceConnector
     Task<long> GetServerTimestampAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Returns a count of documents matching a soft-delete-aware predicate
-    /// as of a given anchor timestamp.
-    /// Used by Level 2 (Count Consistency) and Level 3 (Incremental
-    /// Completeness) validation.
+    /// Returns a count of live documents (not soft-deleted) that were
+    /// modified after <paramref name="anchorTs"/>.
+    /// Predicate: <c>_ts &gt; anchorTs AND isDeleted is absent/false</c>.
+    /// Used by Level 3 (Incremental Completeness) validation to verify
+    /// that all changed documents since the last anchor were captured.
     /// </summary>
     /// <param name="databaseName">Source database name.</param>
     /// <param name="collectionName">Source collection name.</param>
     /// <param name="anchorTs">
-    /// Unix timestamp of the backup's <c>anchorTs</c>.
+    /// Unix timestamp of the previous backup's <c>anchorTs</c>.
+    /// Only documents with <c>_ts</c> strictly greater than this value
+    /// are counted.
     /// </param>
     /// <param name="ct">Cancellation token.</param>
     Task<long> CountDocumentsAsOfAsync(

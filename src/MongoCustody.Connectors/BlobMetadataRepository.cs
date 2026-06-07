@@ -311,7 +311,7 @@ public sealed class BlobMetadataRepository : IMetadataRepository
             using var reader = new StreamReader(stream);
             return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return null;
         }

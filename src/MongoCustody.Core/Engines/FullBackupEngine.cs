@@ -63,7 +63,6 @@ internal sealed class FullBackupEngine
         var dbResults  = new List<DatabaseBackupResult>();
         var overallStatus = BackupStatus.Completed;
         string? overallFailure = null;
-        string lastBackupId = string.Empty;
 
         foreach (var dbName in databases)
         {
@@ -71,8 +70,8 @@ internal sealed class FullBackupEngine
                 dbName, request.TriggeredBy, correlationId, ct)
                 .ConfigureAwait(false);
 
+            dbResult.BackupId = backupId;
             dbResults.Add(dbResult);
-            lastBackupId = backupId;
 
             if (dbResult.Status == BackupStatus.Failed)
             {
@@ -85,7 +84,10 @@ internal sealed class FullBackupEngine
 
         return new BackupResult
         {
-            BackupId        = lastBackupId,
+            // correlationId is the stable run-level identifier. Per-database
+            // backup IDs are in DatabaseResults[n].BackupId and can be passed
+            // to IMetadataRepository.GetBackupRecordAsync for manifest lookup.
+            BackupId        = correlationId,
             BackupType      = BackupType.Full,
             Status          = overallStatus,
             StartedAtUtc    = startedAt,
@@ -154,9 +156,19 @@ internal sealed class FullBackupEngine
         {
             results = await Task.WhenAll(exportTasks).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
-            return (Fail(databaseName, $"Collection export failed: {ex.Message}"), backupId);
+            throw;
+        }
+        catch
+        {
+            // Task.WhenAll re-throws only the first exception; inspect every
+            // faulted task so all collection failures appear in the reason.
+            var errors = exportTasks
+                .Where(t => t.IsFaulted)
+                .SelectMany(t => t.Exception!.InnerExceptions)
+                .Select(e => e.Message);
+            return (Fail(databaseName, $"Collection export failed: {string.Join("; ", errors)}"), backupId);
         }
 
         collRecords.AddRange(results);
@@ -211,9 +223,12 @@ internal sealed class FullBackupEngine
         SemaphoreSlim semaphore,
         CancellationToken ct)
     {
-        await semaphore.WaitAsync(ct).ConfigureAwait(false);
+        bool acquired = false;
         try
         {
+            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+            acquired = true;
+
             var docs = _source.StreamAllDocumentsAsync(databaseName, collectionName, ct);
             return await chunkWriter.WriteCollectionChunksAsync(
                 folder, databaseName, collectionName, docs, ct)
@@ -221,7 +236,7 @@ internal sealed class FullBackupEngine
         }
         finally
         {
-            semaphore.Release();
+            if (acquired) semaphore.Release();
         }
     }
 
