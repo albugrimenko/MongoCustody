@@ -60,6 +60,17 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all completed full backups for the given database whose
+    /// <c>CompletedAtUtc</c> falls within [<paramref name="from"/>,
+    /// <paramref name="to"/>] inclusive, ordered oldest-first.
+    /// </summary>
+    Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
+        string databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Resolves and returns the ordered restore chain for a target date
     /// without performing any data operations (dry-run / preview).
     /// </summary>

@@ -152,6 +152,59 @@ public sealed class BlobMetadataRepository : IMetadataRepository
     }
 
     // ------------------------------------------------------------------ //
+    //  Full backup listing
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
+        string databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default)
+    {
+        // Enumerate every quarter whose date range overlaps [from, to].
+        var quarters = QuartersInRange(from, to);
+        var results  = new List<BackupRecord>();
+
+        foreach (var (year, q) in quarters)
+        {
+            var prefix = $"full/{year}/Q{q}/";
+            await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                               .ConfigureAwait(false))
+            {
+                var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
+                if (record is null) continue;
+                if (!string.Equals(record.DatabaseName, databaseName,
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                if (record.BackupType != BackupType.Full) continue;
+                if (record.CompletedAtUtc < from || record.CompletedAtUtc > to) continue;
+
+                results.Add(record);
+            }
+        }
+
+        results.Sort((a, b) => a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
+        return results.AsReadOnly();
+    }
+
+    // Returns distinct (year, quarter) pairs covering the full [from, to] span.
+    private static IEnumerable<(int Year, int Quarter)> QuartersInRange(
+        DateTimeOffset from, DateTimeOffset to)
+    {
+        var current = new DateTimeOffset(from.Year, from.Month, 1, 0, 0, 0, TimeSpan.Zero);
+        var end     = new DateTimeOffset(to.Year,   to.Month,   1, 0, 0, 0, TimeSpan.Zero);
+
+        var seen = new HashSet<(int, int)>();
+        while (current <= end)
+        {
+            int q = ((current.Month - 1) / 3) + 1;
+            if (seen.Add((current.Year, q)))
+                yield return (current.Year, q);
+            current = current.AddMonths(1);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
     //  Restore chain resolution
     // ------------------------------------------------------------------ //
 

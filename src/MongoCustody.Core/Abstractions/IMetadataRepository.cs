@@ -74,6 +74,18 @@ public interface IMetadataRepository
     Task UpdateRestoreRecordAsync(RestoreRecord record, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all full <see cref="BackupRecord"/>s for the given database
+    /// whose <see cref="BackupRecord.CompletedAtUtc"/> falls within
+    /// [<paramref name="from"/>, <paramref name="to"/>] inclusive.
+    /// Results are ordered oldest-first.
+    /// </summary>
+    Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
+        string databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Verifies the connector can reach the metadata store.
     /// Returns <c>true</c> and an optional latency if reachable.
     /// </summary>
