@@ -288,52 +288,75 @@ foreach (var collection in result.CollectionResults)
 
 ### As a CLI Tool
 
+All commands accept `--config <path>` (default: `mongocustody.json`) and `--output text|json`.
+Connection strings are never stored in the config file — supply them via environment variables:
+
+| Environment variable | Value |
+|---|---|
+| `MONGOCUSTODY_MONGO_CONNECTION_STRING` | MongoDB source connection string |
+| `MONGOCUSTODY_STORAGE_CONNECTION_STRING` | Azure Blob Storage connection string |
+
+#### Health check
+
 ```bash
-# Verify all connectors are reachable
 mongocustody health --config mongocustody.json
+```
 
-# Run a full backup
-mongocustody backup full --config mongocustody.json --database your-database
+#### Full backup
 
-# Run an incremental backup
-mongocustody backup incremental --config mongocustody.json --database your-database
-
-# Generate a weekly checkpoint from the last 6 incrementals
-mongocustody backup checkpoint --config mongocustody.json --database your-database
-
-# Show the restore chain for a target date (dry run — no data written)
-mongocustody chain \
+```bash
+mongocustody backup full \
   --config mongocustody.json \
   --database your-database \
-  --target-date 2025-04-15
+  [--triggered-by scheduler] \
+  [--output json]
+```
 
-# Restore to a target date
+#### Restore
+
+```bash
+# Restore all collections to a point in time
 mongocustody restore \
   --config mongocustody.json \
   --database your-database \
-  --target-date 2025-04-15 \
+  --target-date 2025-04-15T00:00:00Z \
   --target-connection-string "mongodb://restore-account..." \
   --requested-by admin@example.com \
   --approved-by compliance@example.com \
   --reason "INC-2025-0042"
 
-# Restore a single collection only
+# Restore a subset of collections
 mongocustody restore \
   --config mongocustody.json \
   --database your-database \
-  --collection {collectionName} \
-  --target-date 2025-04-15 \
-  --target-connection-string "mongodb://restore-account..."
-
-# Validate a backup by ID
-mongocustody validate \
-  --config mongocustody.json \
-  --backup-id a3f8c2d1 \
-  --level structural,count
-
-# Output results as JSON (useful in scripts and CI)
-mongocustody backup full --config mongocustody.json --output json
+  --target-date 2025-04-15T00:00:00Z \
+  --target-connection-string "mongodb://restore-account..." \
+  --collections patients appointments
 ```
+
+The restore command prints the resolved backup chain to stderr before writing any data, so you can verify what will be applied.
+
+#### List full backups
+
+```bash
+# List all full backups in a date range (text output)
+mongocustody backups list \
+  --config mongocustody.json \
+  --database your-database \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z
+
+# Machine-readable output for scripting and CI
+mongocustody backups list \
+  --database your-database \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --output json
+```
+
+Results are ordered oldest-first and include backup ID, completion timestamp, quarter label, storage folder, and per-collection document and chunk counts.
+
+> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`, `validate`, `chain` (restore chain preview).
 
 ---
 
@@ -547,7 +570,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 7 | Incremental restore and validation | Planned |
 | 8 | Checkpoint engine | Planned |
 | 9 | DI wiring and public API | Planned |
-| 10 | CLI tool | Planned |
+| 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`) | ✅ Complete |
 
 ---
 
