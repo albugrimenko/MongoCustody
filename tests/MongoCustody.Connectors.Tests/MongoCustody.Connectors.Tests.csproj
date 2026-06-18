@@ -11,6 +11,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.5" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="MSTest" Version="4.0.2" />
+    <PackageReference Include="Testcontainers.Azurite" Version="4.4.0" />
+    <PackageReference Include="Testcontainers.MongoDb" Version="4.4.0" />
   </ItemGroup>
 
   <ItemGroup>

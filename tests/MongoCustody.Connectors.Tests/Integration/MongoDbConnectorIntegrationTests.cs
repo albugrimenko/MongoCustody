@@ -1,57 +1,67 @@
 using MongoCustody.Connectors.Secrets;
+using MongoCustody.Connectors.Tests.Infrastructure;
 using MongoCustody.Core.Models;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
 namespace MongoCustody.Connectors.Tests.Integration;
 
 /// <summary>
-/// Integration tests for <see cref="MongoDbConnector"/> against a local
-/// MongoDB instance (or Cosmos DB emulator).
-///
-/// These tests are skipped unless <c>MONGOCUSTODY_INTEGRATION_TESTS=1</c>.
-/// Start MongoDB before running:
-/// <code>docker run -d -p 27017:27017 mongo:7</code>
-/// or via Docker Compose in the tests/ directory.
+/// Integration tests for <see cref="MongoDbConnector"/> against the
+/// MongoDB container started by <see cref="ContainerFixture"/>.
 /// </summary>
 [TestClass]
+[TestCategory("Integration")]
 public sealed class MongoDbConnectorIntegrationTests : IntegrationTestBase
 {
     private MongoDbConnector _connector = null!;
+    private IMongoDatabase   _database  = null!;
+
+    // Unique database name per test run so parallel executions don't clash.
+    private static readonly string DbName =
+        $"mc_test_{Guid.NewGuid():N}";
 
     [TestInitialize]
     public void SetUp()
     {
-        RequireIntegration();
-
+        RequireContainers();
         Environment.SetEnvironmentVariable(
-            "MONGOCUSTODY_MONGO_CONNECTION_STRING", MongoLocalConnectionString);
+            "MONGOCUSTODY_MONGO_CONNECTION_STRING", MongoConnectionString);
 
         var config = new MongoCustodyConfiguration
         {
-            MongoDBAccountEndpoint = MongoLocalConnectionString,
+            MongoDBAccountEndpoint = MongoConnectionString,
             Databases =
             [
                 new DatabaseConfiguration
                 {
-                    DatabaseName = TestDatabaseName,
+                    DatabaseName        = DbName,
                     ExcludedCollections = ["_excluded"]
                 }
             ]
         };
 
         _connector = new MongoDbConnector(config, new EnvironmentSecretProvider());
+
+        var client = new MongoClient(MongoConnectionString);
+        _database  = client.GetDatabase(DbName);
     }
 
     [TestCleanup]
-    public void TearDown()
+    public async Task TearDown()
     {
-        Environment.SetEnvironmentVariable(
-            "MONGOCUSTODY_MONGO_CONNECTION_STRING", null);
+        Environment.SetEnvironmentVariable("MONGOCUSTODY_MONGO_CONNECTION_STRING", null);
+        try
+        {
+            var client = new MongoClient(MongoConnectionString);
+            await client.DropDatabaseAsync(DbName);
+        }
+        catch (InvalidOperationException) { /* containers were never started */ }
     }
 
     [TestMethod]
-    public async Task CheckHealthAsync_ReturnsHealthy_AgainstLocalMongo()
+    public async Task CheckHealthAsync_ReturnsHealthy()
     {
-        RequireIntegration();
         var (isHealthy, latencyMs, error) = await _connector.CheckHealthAsync();
         Assert.IsTrue(isHealthy, $"Health check failed: {error}");
         Assert.IsTrue(latencyMs >= 0);
@@ -60,56 +70,81 @@ public sealed class MongoDbConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task GetServerTimestampAsync_ReturnsReasonableUnixTimestamp()
     {
-        RequireIntegration();
         var before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var ts = await _connector.GetServerTimestampAsync();
-        var after = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var ts     = await _connector.GetServerTimestampAsync();
+        var after  = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        Assert.IsTrue(ts >= before, "Timestamp should be >= before probe");
-        Assert.IsTrue(ts <= after + 1, "Timestamp should be <= after probe (+ 1s tolerance)");
+        Assert.IsTrue(ts >= before,     "Timestamp should be >= before probe.");
+        Assert.IsTrue(ts <= after + 1,  "Timestamp should be <= after probe (+ 1s tolerance).");
     }
 
     [TestMethod]
     public async Task ListCollectionsAsync_ExcludesConfiguredCollections()
     {
-        RequireIntegration();
+        // Create both an included and an excluded collection.
+        await _database.GetCollection<BsonDocument>("projects")
+            .InsertOneAsync(new BsonDocument("x", 1));
+        await _database.GetCollection<BsonDocument>("_excluded")
+            .InsertOneAsync(new BsonDocument("x", 1));
+
         var collections = new List<string>();
-        await foreach (var name in _connector.ListCollectionsAsync(TestDatabaseName))
+        await foreach (var name in _connector.ListCollectionsAsync(DbName))
             collections.Add(name);
 
-        Assert.IsFalse(
-            collections.Contains("_excluded"),
-            "Excluded collection '_excluded' must not appear in results.");
+        Assert.IsTrue(collections.Contains("projects"),
+            "Collection 'projects' should be listed.");
+        Assert.IsFalse(collections.Contains("_excluded"),
+            "Collection '_excluded' must be omitted.");
     }
 
     [TestMethod]
-    public async Task StreamAllDocumentsAsync_YieldsValidBsonBytes()
+    public async Task StreamAllDocumentsAsync_ReturnsAllSeededDocuments()
     {
-        RequireIntegration();
+        var seeded = await TestDataBuilder.Projects(50)
+            .SeedAsync(_database, "projects");
 
-        // The test collection may be empty — just verify no exception is thrown
-        // and all yielded buffers are non-empty valid BSON.
-        await foreach (var bytes in _connector.StreamAllDocumentsAsync(
-            TestDatabaseName, "smoke_test"))
+        var count = 0;
+        await foreach (var bytes in _connector.StreamAllDocumentsAsync(DbName, "projects"))
         {
-            Assert.IsTrue(bytes.Length >= 5,
-                "Minimum BSON document is 5 bytes (empty document).");
+            Assert.IsTrue(bytes.Length >= 5, "Minimum BSON document is 5 bytes.");
+            count++;
         }
+
+        Assert.AreEqual(seeded, count, "Streamed count must match seeded count.");
+    }
+
+    [TestMethod]
+    public async Task StreamChangedDocumentsAsync_ReturnsOnlyDocumentsAfterAnchor()
+    {
+        var anchorTs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        // Documents timestamped before the anchor — should NOT appear.
+        await TestDataBuilder.Documents(20, anchorTs: anchorTs - 1000)
+            .SeedAsync(_database, "documents");
+
+        // Documents timestamped after the anchor — should appear.
+        await TestDataBuilder.Documents(10, anchorTs: anchorTs + 5)
+            .SeedAsync(_database, "documents");
+
+        var count = 0;
+        await foreach (var _ in _connector.StreamChangedDocumentsAsync(
+            DbName, "documents", anchorTs, bufferSeconds: 0))
+            count++;
+
+        Assert.AreEqual(10, count,
+            "Only documents updated after anchorTs should be returned.");
     }
 
     [TestMethod]
     public async Task StreamChangedDocumentsAsync_WithFutureAnchor_YieldsNoDocuments()
     {
-        RequireIntegration();
-        // A very large fromTimestamp means no documents qualify
         long futureTs = DateTimeOffset.UtcNow.AddYears(10).ToUnixTimeSeconds();
 
         var count = 0;
         await foreach (var _ in _connector.StreamChangedDocumentsAsync(
-            TestDatabaseName, "smoke_test", futureTs, bufferSeconds: 0))
+            DbName, "smoke_test", futureTs, bufferSeconds: 0))
             count++;
 
-        Assert.AreEqual(0, count,
-            "No documents should be returned for a future anchor timestamp.");
+        Assert.AreEqual(0, count, "No documents should match a future anchor.");
     }
 }

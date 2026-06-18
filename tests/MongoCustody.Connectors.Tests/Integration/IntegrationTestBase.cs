@@ -1,64 +1,52 @@
+using MongoCustody.Connectors.Tests.Infrastructure;
+
 namespace MongoCustody.Connectors.Tests.Integration;
 
 /// <summary>
 /// Base class for all connector integration tests.
 ///
-/// Integration tests require live infrastructure (Azurite for Blob Storage
-/// and a MongoDB-compatible endpoint for the MongoDB connector tests).
-/// To avoid breaking CI pipelines that have no emulators, every test
-/// method in a derived class must call <see cref="RequireIntegration"/>
-/// as its first statement.
+/// <para>
+/// Infrastructure (Azurite + MongoDB) is started automatically once per test
+/// run by <see cref="ContainerFixture"/> using Testcontainers. No manual
+/// Docker Compose or environment variable is required. Docker must be
+/// running on the host; if it is unavailable Testcontainers throws a clear
+/// startup error.
+/// </para>
 ///
-/// To run integration tests locally:
-/// <code>
-/// $env:MONGOCUSTODY_INTEGRATION_TESTS = "1"
-/// dotnet test tests/MongoCustody.Connectors.Tests --filter "Category=Integration"
-/// </code>
-///
-/// Docker Compose alternative (starts both Azurite and MongoDB):
-/// <code>
-/// docker compose -f tests/docker-compose.yml up -d
-/// $env:MONGOCUSTODY_INTEGRATION_TESTS = "1"
-/// dotnet test tests/MongoCustody.Connectors.Tests --filter "Category=Integration"
-/// docker compose -f tests/docker-compose.yml down
-/// </code>
+/// <para>
+/// Each test must use a unique blob folder prefix or MongoDB collection name
+/// to avoid interference when tests run in parallel.
+/// </para>
 /// </summary>
 [TestCategory("Integration")]
 public abstract class IntegrationTestBase
 {
-    /// <summary>
-    /// Call at the start of every integration test method.
-    /// Marks the test as inconclusive (not failed) when the
-    /// <c>MONGOCUSTODY_INTEGRATION_TESTS</c> environment variable is absent
-    /// or not set to <c>1</c> / <c>true</c>.
-    /// </summary>
-    protected static void RequireIntegration()
-    {
-        var flag = Environment.GetEnvironmentVariable("MONGOCUSTODY_INTEGRATION_TESTS");
-        if (flag is not ("1" or "true" or "True"))
-            Assert.Inconclusive(
-                "Integration tests skipped. " +
-                "Set MONGOCUSTODY_INTEGRATION_TESTS=1 to run them.");
-    }
-
     // ------------------------------------------------------------------ //
-    //  Shared emulator connection strings (Azurite defaults)
+    //  Guard — call at the top of every [TestInitialize]
     // ------------------------------------------------------------------ //
 
     /// <summary>
-    /// Azurite local emulator connection string (default well-known key).
+    /// Marks the test Inconclusive when Docker is unavailable.
+    /// Call this as the first statement of every <c>[TestInitialize]</c>.
     /// </summary>
-    protected const string AzuriteConnectionString =
-        "DefaultEndpointsProtocol=http;" +
-        "AccountName=devstoreaccount1;" +
-        "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;" +
-        "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
+    protected static void RequireContainers()
+        => TestContainerContext.RequireContainers();
 
-    /// <summary>
-    /// MongoDB local emulator connection string (default port 27017).
-    /// </summary>
-    protected const string MongoLocalConnectionString =
-        "mongodb://localhost:27017";
+    // ------------------------------------------------------------------ //
+    //  Connection strings — backed by Testcontainers at runtime
+    // ------------------------------------------------------------------ //
+
+    /// <summary>Azurite connection string for the running test container.</summary>
+    protected static string AzuriteConnectionString
+        => TestContainerContext.AzuriteConnectionString;
+
+    /// <summary>MongoDB connection string for the running test container.</summary>
+    protected static string MongoConnectionString
+        => TestContainerContext.MongoConnectionString;
+
+    // ------------------------------------------------------------------ //
+    //  Shared constants
+    // ------------------------------------------------------------------ //
 
     /// <summary>
     /// Integration test database name — isolated from any production data.
@@ -66,7 +54,7 @@ public abstract class IntegrationTestBase
     protected const string TestDatabaseName = "_mongocustody_integration_test";
 
     /// <summary>
-    /// Integration test container name in Azurite.
+    /// Integration test blob container name in Azurite.
     /// </summary>
     protected const string TestContainerName = "integration-test-backups";
 }

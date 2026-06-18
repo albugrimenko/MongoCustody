@@ -5,47 +5,44 @@ using MongoCustody.Core.Models;
 namespace MongoCustody.Connectors.Tests.Integration;
 
 /// <summary>
-/// Integration tests for <see cref="BlobStorageConnector"/> against Azurite.
-///
-/// These tests are skipped unless <c>MONGOCUSTODY_INTEGRATION_TESTS=1</c>.
-/// Start Azurite before running:
-/// <code>azurite --silent --location ./tmp/azurite</code>
-/// or via Docker Compose in the tests/ directory.
+/// Integration tests for <see cref="BlobStorageConnector"/> against the
+/// Azurite container started by <see cref="MongoCustody.Connectors.Tests.Infrastructure.ContainerFixture"/>.
 /// </summary>
 [TestClass]
+[TestCategory("Integration")]
 public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
 {
     private BlobStorageConnector _connector = null!;
-    private BlobContainerClient _containerClient = null!;
+    private BlobContainerClient  _containerClient = null!;
+
+    // Each test class uses a unique container name so parallel test classes
+    // don't share state.
+    private static readonly string ContainerName =
+        $"blob-connector-tests-{Guid.NewGuid():N}";
 
     [TestInitialize]
     public async Task SetUp()
     {
-        RequireIntegration();
-
-        _containerClient = new BlobContainerClient(
-            AzuriteConnectionString, TestContainerName);
+        RequireContainers();
+        _containerClient = new BlobContainerClient(AzuriteConnectionString, ContainerName);
         await _containerClient.CreateIfNotExistsAsync();
 
         var config = new MongoCustodyConfiguration
         {
-            StorageContainerName = TestContainerName,
-            StorageAccountEndpoint = "http://127.0.0.1:10000/devstoreaccount1"
+            StorageContainerName   = ContainerName,
+            StorageAccountEndpoint = "http://placeholder" // unused — connection string takes precedence
         };
 
-        // Use the connection-string path via EnvironmentSecretProvider
         Environment.SetEnvironmentVariable(
             "MONGOCUSTODY_STORAGE_CONNECTION_STRING", AzuriteConnectionString);
 
-        _connector = new BlobStorageConnector(
-            config, new EnvironmentSecretProvider());
+        _connector = new BlobStorageConnector(config, new EnvironmentSecretProvider());
     }
 
     [TestCleanup]
     public async Task TearDown()
     {
-        Environment.SetEnvironmentVariable(
-            "MONGOCUSTODY_STORAGE_CONNECTION_STRING", null);
+        Environment.SetEnvironmentVariable("MONGOCUSTODY_STORAGE_CONNECTION_STRING", null);
         if (_containerClient is not null)
             await _containerClient.DeleteIfExistsAsync();
     }
@@ -53,9 +50,8 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task WriteAndReadManifest_RoundTrips()
     {
-        RequireIntegration();
         const string folder = "full/2025/Q1/test-backup-id/";
-        const string json = """{"schemaVersion":1,"backupId":"test-backup-id"}""";
+        const string json   = """{"schemaVersion":1,"backupId":"test-backup-id"}""";
 
         await _connector.WriteManifestAsync(folder, json);
         var result = await _connector.ReadManifestAsync(folder);
@@ -66,7 +62,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task ReadManifest_ReturnsNull_WhenNotExists()
     {
-        RequireIntegration();
         var result = await _connector.ReadManifestAsync("full/nonexistent/folder/");
         Assert.IsNull(result);
     }
@@ -74,7 +69,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task BlobExistsAsync_ReturnsTrue_AfterWrite()
     {
-        RequireIntegration();
         const string folder = "full/2025/Q1/exists-test/";
         await _connector.WriteManifestAsync(folder, "{}");
 
@@ -86,7 +80,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task DeleteBlobAsync_RemovesBlob()
     {
-        RequireIntegration();
         const string folder = "full/2025/Q1/delete-test/";
         await _connector.WriteManifestAsync(folder, "{}");
 
@@ -100,7 +93,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task OpenWriteAndRead_RoundTripsBytes()
     {
-        RequireIntegration();
         const string blobPath = "full/2025/Q1/rw-test/mydb.col.part-001.bson.gz";
         var expected = new byte[] { 0x01, 0x02, 0x03, 0xAB, 0xCD };
 
@@ -117,7 +109,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task ListFoldersAsync_ReturnsFoldersUnderPrefix()
     {
-        RequireIntegration();
         await _connector.WriteManifestAsync("full/2025/Q1/id-a/", "{}");
         await _connector.WriteManifestAsync("full/2025/Q1/id-b/", "{}");
 
@@ -132,7 +123,6 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
     [TestMethod]
     public async Task CheckHealthAsync_ReturnsHealthy_AgainstAzurite()
     {
-        RequireIntegration();
         var (isHealthy, latencyMs, error) = await _connector.CheckHealthAsync();
         Assert.IsTrue(isHealthy, $"Health check failed: {error}");
         Assert.IsTrue(latencyMs >= 0);
