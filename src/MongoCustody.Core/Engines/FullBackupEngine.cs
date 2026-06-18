@@ -64,21 +64,20 @@ internal sealed class FullBackupEngine
         var overallStatus = BackupStatus.Completed;
         string? overallFailure = null;
 
-        foreach (var dbName in databases)
-        {
-            var (dbResult, backupId) = await RunForDatabaseAsync(
-                dbName, request.TriggeredBy, correlationId, ct)
-                .ConfigureAwait(false);
+        var dbTasks = databases
+            .Select(dbName => RunForDatabaseAsync(dbName, request.TriggeredBy, correlationId, ct))
+            .ToList();
+        var dbResultTuples = await Task.WhenAll(dbTasks).ConfigureAwait(false);
 
+        foreach (var (dbResult, backupId) in dbResultTuples)
+        {
             dbResult.BackupId = backupId;
             dbResults.Add(dbResult);
 
             if (dbResult.Status == BackupStatus.Failed)
             {
                 overallStatus  = BackupStatus.Failed;
-                overallFailure = dbResult.FailureReason;
-                // Continue processing remaining databases so the result
-                // contains per-database detail, but mark the top-level failed.
+                overallFailure ??= dbResult.FailureReason;
             }
         }
 
@@ -145,7 +144,7 @@ internal sealed class FullBackupEngine
         // Step 4 — export all collections (parallel, bounded)
         var chunkWriter    = new ChunkWriter(_storage, _config.Policy);
         var collRecords    = new List<CollectionBackupRecord>(collections.Count);
-        var semaphore      = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
+        using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
         var exportTasks    = collections
             .Select(col => ExportCollectionAsync(
                 chunkWriter, folder, databaseName, col, semaphore, ct))

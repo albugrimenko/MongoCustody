@@ -81,7 +81,7 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         // Enumerate folders for the current and previous quarter,
         // pick the latest manifest that matches type + database.
         var now = DateTimeOffset.UtcNow;
-        var quartersToSearch = new[] { now, now.AddMonths(-3) };
+        var quartersToSearch = new[] { now, now.AddMonths(-3), now.AddMonths(-6), now.AddMonths(-9) };
 
         foreach (var quarter in quartersToSearch)
         {
@@ -131,6 +131,7 @@ public sealed class BlobMetadataRepository : IMetadataRepository
             return null;
 
         int q = parts[1][1] - '0';
+        if (q < 1 || q > 4) return null;
         var prefix = $"full/{year}/Q{q}/";
 
         BackupRecord? result = null;
@@ -191,16 +192,16 @@ public sealed class BlobMetadataRepository : IMetadataRepository
     private static IEnumerable<(int Year, int Quarter)> QuartersInRange(
         DateTimeOffset from, DateTimeOffset to)
     {
-        var current = new DateTimeOffset(from.Year, from.Month, 1, 0, 0, 0, TimeSpan.Zero);
-        var end     = new DateTimeOffset(to.Year,   to.Month,   1, 0, 0, 0, TimeSpan.Zero);
+        var year = from.Year;
+        var q    = ((from.Month - 1) / 3) + 1;
+        var endYear = to.Year;
+        var endQ    = ((to.Month - 1) / 3) + 1;
 
-        var seen = new HashSet<(int, int)>();
-        while (current <= end)
+        while (year < endYear || (year == endYear && q <= endQ))
         {
-            int q = ((current.Month - 1) / 3) + 1;
-            if (seen.Add((current.Year, q)))
-                yield return (current.Year, q);
-            current = current.AddMonths(1);
+            yield return (year, q);
+            q++;
+            if (q > 4) { q = 1; year++; }
         }
     }
 
@@ -242,7 +243,7 @@ public sealed class BlobMetadataRepository : IMetadataRepository
 
         // Sort checkpoints chronologically; include all that precede target
         checkpoints.Sort((a, b) =>
-            a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
+            a.AnchorTs.CompareTo(b.AnchorTs));
         chain.AddRange(checkpoints);
 
         // 3. Determine the anchor after the last checkpoint (or full backup)

@@ -145,11 +145,12 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
     }
 
     /// <inheritdoc />
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (_client is IDisposable disposable)
+        if (_client is IAsyncDisposable asyncDisposable)
+            await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+        else if (_client is IDisposable disposable)
             disposable.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     // ------------------------------------------------------------------ //
@@ -186,6 +187,6 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
             .ConfigureAwait(false);
 
         writes.Clear();
-        return bulkResult.Upserts.Count + bulkResult.ModifiedCount;
+        return bulkResult.Upserts.Count + bulkResult.MatchedCount;
     }
 }

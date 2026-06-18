@@ -76,27 +76,7 @@ internal static class RestoreCommand
             try { svc = ServiceFactory.Build(configPath); }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
-            Console.Error.WriteLine($"Resolving restore chain for '{database}' as of {targetDate:u}…");
-            IReadOnlyList<BackupRecord> chain;
-            try
-            {
-                chain = await svc.ResolveRestoreChainAsync(database, targetDate, ct);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                return Output.Error($"Could not resolve restore chain: {ex.Message}");
-            }
-
-            if (chain.Count == 0)
-                return Output.Error(
-                    $"No backup chain found for '{database}' at or before {targetDate:u}.");
-
-            Console.Error.WriteLine($"Chain ({chain.Count} step(s)):");
-            foreach (var step in chain)
-                Console.Error.WriteLine(
-                    $"  [{step.BackupType}]  {step.BackupFolder}  ({step.CompletedAtUtc:u})");
-
-            Console.Error.WriteLine("Starting restore…");
+            Console.Error.WriteLine($"Starting restore of '{database}' as of {targetDate:u}…");
 
             var result = await svc.RestoreAsync(
                 new RestoreRequest

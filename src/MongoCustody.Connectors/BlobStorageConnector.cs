@@ -30,7 +30,7 @@ public sealed class BlobStorageConnector : IStorageConnector
 {
     private readonly MongoCustodyConfiguration _config;
     private readonly ISecretProvider _secretProvider;
-    private readonly int _blockSizeBytes;
+    private readonly long _blockSizeBytes;
 
     // Lazily initialised on first use — avoids blocking DI construction
     // and eliminates the synchronous Key Vault call at startup.
@@ -50,13 +50,13 @@ public sealed class BlobStorageConnector : IStorageConnector
     {
         _config = configuration;
         _secretProvider = secretProvider;
-        _blockSizeBytes = configuration.Policy.BlobBlockSizeMb * 1024 * 1024;
+        _blockSizeBytes = (long)configuration.Policy.BlobBlockSizeMb * 1024 * 1024;
     }
 
     /// <summary>Internal constructor for unit testing — bypasses lazy init.</summary>
     internal BlobStorageConnector(
         BlobContainerClient containerClient,
-        int blockSizeBytes)
+        long blockSizeBytes)
     {
         _config = null!;
         _secretProvider = null!;

@@ -221,6 +221,10 @@ internal sealed class ValidationEngine
         CollectionBackupRecord collRecord,
         CancellationToken      ct)
     {
+        if (collRecord.Chunks.Count == 0 && collRecord.TotalDocuments > 0)
+            return (false,
+                $"Manifest records {collRecord.TotalDocuments} document(s) but no chunks were written.");
+
         foreach (var chunk in collRecord.Chunks)
         {
             string actualHash;
@@ -379,6 +383,12 @@ internal sealed class ValidationEngine
         await using var target = _restoreTargetFactory!.Create(targetConnectionString);
         var restoreEngine = new RestoreEngine(_storage, target, _config);
 
+        // Resolve the full chain so the dry-run applies the complete restore
+        // sequence rather than only the single record being validated.
+        var chain = await _metadata
+            .ResolveRestoreChainAsync(record.DatabaseName, record.CompletedAtUtc, ct)
+            .ConfigureAwait(false);
+
         var restoreResult = await restoreEngine.RunAsync(
             new RestoreRequest
             {
@@ -388,7 +398,7 @@ internal sealed class ValidationEngine
                 ApprovedBy             = "validation-dry-run",
                 Reason                 = $"Level 4 dry-run for backup {record.BackupId}"
             },
-            [record],
+            chain,
             ct).ConfigureAwait(false);
 
         if (restoreResult.Status != BackupStatus.Completed)

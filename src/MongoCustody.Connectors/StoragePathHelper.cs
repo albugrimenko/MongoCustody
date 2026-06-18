@@ -86,8 +86,8 @@ internal static class StoragePathHelper
     /// </summary>
     internal static string IncrementalQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
-        int q = ((utc.Month - 1) / 3) + 1;
-        return $"incremental/{utc.Year}/Q{q}/{fullBackupId}/";
+        var parts = BackupPathBuilder.QuarterLabel(utc).Split('-'); // ["YYYY", "Qq"]
+        return $"incremental/{parts[0]}/{parts[1]}/{fullBackupId}/";
     }
 
     /// <summary>
@@ -97,8 +97,8 @@ internal static class StoragePathHelper
     /// </summary>
     internal static string CheckpointQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
-        int q = ((utc.Month - 1) / 3) + 1;
-        return $"checkpoint/{utc.Year}/Q{q}/{fullBackupId}/";
+        var parts = BackupPathBuilder.QuarterLabel(utc).Split('-'); // ["YYYY", "Qq"]
+        return $"checkpoint/{parts[0]}/{parts[1]}/{fullBackupId}/";
     }
 
     // ------------------------------------------------------------------ //

@@ -103,7 +103,7 @@ internal sealed class RestoreEngine
             // Subsequent steps use UpsertMany (replaceOne with upsert).
             bool useInsert = isFirstStep && record.BackupType == BackupType.Full;
 
-            var semaphore   = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
+            using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
             var stepTasks   = collectionsToRestore
                 .Select(c => RestoreCollectionAsync(
                     record.DatabaseName, c, semaphore, useInsert, ct))

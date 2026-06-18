@@ -225,7 +225,15 @@ public sealed class MongoCustodyService : IMongoCustodyService
                 .ResolveRestoreChainAsync(request.DatabaseName, request.TargetDate, ct)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            await FinaliseAuditAndReturnAsync(
+                restoreRecord,
+                QuickFail("Restore was cancelled.", startedAt, correlationId, request.TargetDate),
+                CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception ex)
         {
             return await FinaliseAuditAndReturnAsync(
                 restoreRecord,
@@ -252,7 +260,14 @@ public sealed class MongoCustodyService : IMongoCustodyService
         {
             result = await engine.RunAsync(request, chain, ct).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            await FinaliseAuditAndReturnAsync(
+                restoreRecord,
+                QuickFail("Restore was cancelled.", startedAt, correlationId, request.TargetDate),
+                CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
         catch (Exception ex)
         {
             result = QuickFail($"Restore engine threw: {ex.Message}",
