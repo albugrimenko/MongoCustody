@@ -540,9 +540,9 @@ The library is being built in the following sequence. Each phase is independentl
 |---|---|---|
 | 1 | Models, abstractions, and configuration | ✅ Complete |
 | 2 | Connectors and health checks | ✅ Complete |
-| 3 | Full backup engine | Planned |
-| 4 | Validation engine (full backup) | Planned |
-| 5 | Full backup restore engine | Planned |
+| 3 | Full backup engine | ✅ Complete |
+| 4 | Validation engine (L1 structural integrity, L2 count consistency, L3 incremental completeness) | ✅ Complete |
+| 5 | Full backup restore engine (restore chain replay; L4 restore dry-run validation) | ✅ Complete |
 | 6 | Incremental backup engine | Planned |
 | 7 | Incremental restore and validation | Planned |
 | 8 | Checkpoint engine | Planned |

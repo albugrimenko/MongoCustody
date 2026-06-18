@@ -106,6 +106,26 @@ public interface IBackupSourceConnector
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns a soft-delete-aware count of documents that existed as of
+    /// <paramref name="anchorTs"/>, i.e. documents that were either not yet
+    /// deleted at that point, or deleted strictly after it.
+    /// Predicate: <c>(isDeleted absent OR isDeleted=false) OR (isDeleted=true AND _ts &gt; anchorTs)</c>.
+    /// Used by Level 2 (Count Consistency) validation against full backups.
+    /// </summary>
+    /// <param name="databaseName">Source database name.</param>
+    /// <param name="collectionName">Source collection name.</param>
+    /// <param name="anchorTs">
+    /// Unix timestamp of the backup's <c>anchorTs</c>. Documents soft-deleted
+    /// at or before this timestamp are excluded from the count.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<long> CountDocumentsExistingAtAsync(
+        string databaseName,
+        string collectionName,
+        long anchorTs,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Verifies the connector can reach the MongoDB instance.
     /// Returns <c>true</c> and an optional latency if reachable.
     /// </summary>

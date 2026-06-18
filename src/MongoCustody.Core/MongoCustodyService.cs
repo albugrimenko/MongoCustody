@@ -15,8 +15,8 @@ namespace MongoCustody.Core;
 ///   <item>Phase 1 — Models and abstractions ✅</item>
 ///   <item>Phase 2 — Connectors ✅</item>
 ///   <item>Phase 3 — Full backup engine ✅ (<see cref="RunFullBackupAsync"/>)</item>
-///   <item>Phase 4 — Validation engine — Planned</item>
-///   <item>Phase 5 — Full-backup restore — Planned</item>
+///   <item>Phase 4 — Validation engine ✅ (<see cref="ValidateBackupAsync"/>)</item>
+///   <item>Phase 5 — Restore engine ✅ (<see cref="RestoreAsync"/>)</item>
 ///   <item>Phase 6 — Incremental backup engine — Planned</item>
 ///   <item>Phase 7 — Incremental restore and validation — Planned</item>
 ///   <item>Phase 8 — Checkpoint engine — Planned</item>
@@ -24,21 +24,24 @@ namespace MongoCustody.Core;
 /// </summary>
 public sealed class MongoCustodyService : IMongoCustodyService
 {
-    private readonly IBackupSourceConnector   _source;
-    private readonly IStorageConnector        _storage;
-    private readonly IMetadataRepository      _metadata;
-    private readonly MongoCustodyConfiguration _config;
+    private readonly IBackupSourceConnector         _source;
+    private readonly IStorageConnector              _storage;
+    private readonly IMetadataRepository            _metadata;
+    private readonly MongoCustodyConfiguration      _config;
+    private readonly IRestoreTargetConnectorFactory? _restoreTargetFactory;
 
     public MongoCustodyService(
-        IBackupSourceConnector    source,
-        IStorageConnector         storage,
-        IMetadataRepository       metadata,
-        MongoCustodyConfiguration config)
+        IBackupSourceConnector           source,
+        IStorageConnector                storage,
+        IMetadataRepository              metadata,
+        MongoCustodyConfiguration        config,
+        IRestoreTargetConnectorFactory?  restoreTargetFactory = null)
     {
-        _source   = source;
-        _storage  = storage;
-        _metadata = metadata;
-        _config   = config;
+        _source               = source;
+        _storage              = storage;
+        _metadata             = metadata;
+        _config               = config;
+        _restoreTargetFactory = restoreTargetFactory;
     }
 
     // ------------------------------------------------------------------ //
@@ -152,15 +155,140 @@ public sealed class MongoCustodyService : IMongoCustodyService
             "Checkpoint engine is planned for Phase 8.");
 
     // ------------------------------------------------------------------ //
-    //  Phase 5 / 7 — Restore (not yet implemented)
+    //  Phase 5 — Restore engine
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
-    public Task<RestoreResult> RestoreAsync(
-        RestoreRequest request,
+    public async Task<RestoreResult> RestoreAsync(
+        RestoreRequest    request,
         CancellationToken ct = default)
-        => throw new NotImplementedException(
-            "Restore engine is planned for Phase 5.");
+    {
+        var startedAt     = DateTimeOffset.UtcNow;
+        var correlationId = string.IsNullOrWhiteSpace(request.CorrelationId)
+            ? Guid.NewGuid().ToString()
+            : request.CorrelationId;
+
+        static RestoreResult QuickFail(string reason, DateTimeOffset at, string cid,
+            DateTimeOffset targetDate) => new()
+        {
+            Status         = BackupStatus.Failed,
+            StartedAtUtc   = at,
+            CompletedAtUtc = DateTimeOffset.UtcNow,
+            TargetDate     = targetDate,
+            FailureReason  = reason,
+            CorrelationId  = cid
+        };
+
+        if (string.IsNullOrWhiteSpace(request.DatabaseName))
+            return QuickFail("DatabaseName is required.", startedAt, correlationId, request.TargetDate);
+
+        if (string.IsNullOrWhiteSpace(request.TargetConnectionString))
+            return QuickFail("TargetConnectionString is required.", startedAt, correlationId, request.TargetDate);
+
+        if (_restoreTargetFactory is null)
+            return QuickFail(
+                "No IRestoreTargetConnectorFactory is registered. " +
+                "Ensure MongoCustody.Connectors is wired into the DI container.",
+                startedAt, correlationId, request.TargetDate);
+
+        // Write the pre-restore audit record BEFORE touching the target.
+        var restoreRecord = new RestoreRecord
+        {
+            RestoreId      = Guid.NewGuid().ToString(),
+            RequestedAtUtc = startedAt,
+            Status         = BackupStatus.Running,
+            DatabaseName   = request.DatabaseName,
+            TargetDate     = request.TargetDate,
+            Collections    = request.Collections,
+            RequestedBy    = request.RequestedBy,
+            ApprovedBy     = request.ApprovedBy,
+            Reason         = request.Reason,
+            CorrelationId  = correlationId
+        };
+
+        try
+        {
+            await _metadata.SaveRestoreRecordAsync(restoreRecord, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return QuickFail(
+                $"Failed to write pre-restore audit record: {ex.Message}",
+                startedAt, correlationId, request.TargetDate);
+        }
+
+        // Resolve the restore chain.
+        IReadOnlyList<BackupRecord> chain;
+        try
+        {
+            chain = await _metadata
+                .ResolveRestoreChainAsync(request.DatabaseName, request.TargetDate, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return await FinaliseAuditAndReturnAsync(
+                restoreRecord,
+                QuickFail($"Failed to resolve restore chain: {ex.Message}",
+                    startedAt, correlationId, request.TargetDate),
+                ct);
+        }
+
+        if (chain.Count == 0)
+            return await FinaliseAuditAndReturnAsync(
+                restoreRecord,
+                QuickFail(
+                    $"No backup chain found for database '{request.DatabaseName}' " +
+                    $"at or before {request.TargetDate:O}.",
+                    startedAt, correlationId, request.TargetDate),
+                ct);
+
+        // Create the per-request target connector and run the engine.
+        await using var target  = _restoreTargetFactory.Create(request.TargetConnectionString);
+        var             engine  = new RestoreEngine(_storage, target, _config);
+
+        RestoreResult result;
+        try
+        {
+            result = await engine.RunAsync(request, chain, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            result = QuickFail($"Restore engine threw: {ex.Message}",
+                startedAt, correlationId, request.TargetDate);
+        }
+
+        return await FinaliseAuditAndReturnAsync(restoreRecord, result, ct);
+    }
+
+    private async Task<RestoreResult> FinaliseAuditAndReturnAsync(
+        RestoreRecord     record,
+        RestoreResult     result,
+        CancellationToken ct)
+    {
+        record.Status        = result.Status;
+        record.CompletedAtUtc = result.CompletedAtUtc;
+        record.FailureReason  = result.FailureReason;
+        record.RestoreChain   = result.RestoreChain;
+
+        try
+        {
+            await _metadata.UpdateRestoreRecordAsync(record, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The restore data was written successfully; audit update failure is
+            // non-fatal but should be surfaced via structured logging in production.
+            // We append a note to the failure reason so the caller can surface it.
+            result.FailureReason =
+                string.IsNullOrEmpty(result.FailureReason)
+                    ? $"[Audit update failed: {ex.Message}]"
+                    : $"{result.FailureReason} [Audit update failed: {ex.Message}]";
+        }
+
+        return result;
+    }
 
     // ------------------------------------------------------------------ //
     //  Phase 4 — Validation (not yet implemented)
@@ -170,8 +298,11 @@ public sealed class MongoCustodyService : IMongoCustodyService
     public Task<ValidationResult> ValidateBackupAsync(
         ValidationRequest request,
         CancellationToken ct = default)
-        => throw new NotImplementedException(
-            "Validation engine is planned for Phase 4.");
+    {
+        var engine = new ValidationEngine(
+            _source, _storage, _metadata, _config, _restoreTargetFactory);
+        return engine.ValidateAsync(request, ct);
+    }
 
     // ------------------------------------------------------------------ //
     //  Restore chain preview (used by Phase 5 and CLI)

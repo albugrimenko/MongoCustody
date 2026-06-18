@@ -173,6 +173,39 @@ public sealed class MongoDbConnector : IBackupSourceConnector
     }
 
     /// <inheritdoc />
+    public async Task<long> CountDocumentsExistingAtAsync(
+        string databaseName,
+        string collectionName,
+        long anchorTs,
+        CancellationToken ct = default)
+    {
+        var collection = await GetCollectionAsync(databaseName, collectionName, ct)
+            .ConfigureAwait(false);
+
+        // Counts documents that existed at anchorTs — used for Level 2
+        // (Count Consistency) validation: documents never soft-deleted, OR
+        // documents soft-deleted AFTER the backup's anchor timestamp (they
+        // were still present in the collection when the snapshot was taken).
+        //
+        //   (isDeleted absent OR isDeleted=false)
+        //   OR (isDeleted=true AND _ts > anchorTs)
+        var notDeleted = Builders<BsonDocument>.Filter.Or(
+            Builders<BsonDocument>.Filter.Not(
+                Builders<BsonDocument>.Filter.Exists("isDeleted")),
+            Builders<BsonDocument>.Filter.Eq("isDeleted", false));
+
+        var deletedAfterAnchor = Builders<BsonDocument>.Filter.And(
+            Builders<BsonDocument>.Filter.Eq("isDeleted", true),
+            Builders<BsonDocument>.Filter.Gt("_ts", anchorTs));
+
+        var filter = Builders<BsonDocument>.Filter.Or(notDeleted, deletedAfterAnchor);
+
+        return await collection
+            .CountDocumentsAsync(filter, cancellationToken: ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<(bool IsHealthy, long LatencyMs, string? ErrorMessage)>
         CheckHealthAsync(CancellationToken ct = default)
     {
