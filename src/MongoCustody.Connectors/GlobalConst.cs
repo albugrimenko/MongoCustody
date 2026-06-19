@@ -10,12 +10,12 @@
         /// Key name: MongoDB connection string
         /// MONGOCUSTODY_MONGO_CONNECTION_STRING
         /// </summary>
-        internal static string KEYNAME_MONGODB_CONNSTRING = "APPSETTING_COSMOS_CONNSTRING";
+        internal static string KEYNAME_MONGODB_CONNSTRING = "MONGOCUSTODY_MONGO_CONNECTION_STRING";
 
         /// <summary>
         /// Key name: Azure File Storage connection string
-        /// mongocustody-storage-connection-string
+        /// MONGOCUSTODY_STORAGE_CONNECTION_STRING
         /// </summary>
-        internal static string KEYNAME_AZBLOB_CONNSTRING = "APPSETTING_AZBLOB_CONNSTRING";
+        internal static string KEYNAME_AZBLOB_CONNSTRING = "MONGOCUSTODY_STORAGE_CONNECTION_STRING";
     }
 }

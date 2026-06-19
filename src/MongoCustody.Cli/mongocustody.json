@@ -1,0 +1,20 @@
+{
+  "storageContainerName": "backups",
+  "databases": [
+    {
+      "databaseName": "TEST",
+      "excludedCollections": []
+    }
+  ],
+  "policy": {
+    "incrementalBufferSeconds": 300,
+    "backupFormat": "Bson",
+    "compressionLevel": "Fastest",
+    "maxParallelCollections": 4,
+    "blobBlockSizeMb": 100,
+    "chunkSizeGb": 10
+  },
+  "secrets": {
+    "provider": "EnvironmentVariables"
+  }
+}
