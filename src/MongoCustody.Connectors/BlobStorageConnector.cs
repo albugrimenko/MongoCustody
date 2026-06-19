@@ -40,7 +40,7 @@ public sealed class BlobStorageConnector : IStorageConnector
     /// <param name="configuration">Root MongoCustody configuration.</param>
     /// <param name="secretProvider">
     /// Used to resolve the optional storage connection string secret
-    /// (<c>mongocustody-storage-connection-string</c>). When the secret
+    /// (<c>{GlobalConst.KEYNAME_AZBLOB_CONNSTRING}</c>). When the secret
     /// is absent the connector uses the endpoint URL with
     /// <see cref="DefaultAzureCredential"/>.
     /// </param>
@@ -134,6 +134,8 @@ public sealed class BlobStorageConnector : IStorageConnector
 
         await foreach (var page in container
             .GetBlobsByHierarchyAsync(
+                traits: default,
+                states: default,
                 delimiter: "/",
                 prefix: prefix,
                 cancellationToken: ct)
@@ -212,7 +214,7 @@ public sealed class BlobStorageConnector : IStorageConnector
             if (_container is not null) return _container;
 
             var connectionString = await _secretProvider
-                .GetSecretAsync("mongocustody-storage-connection-string", ct)
+                .GetSecretAsync(GlobalConst.KEYNAME_AZBLOB_CONNSTRING, ct)
                 .ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(connectionString))

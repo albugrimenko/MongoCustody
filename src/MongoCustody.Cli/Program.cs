@@ -1,7 +1,7 @@
 using System.CommandLine;
 using MongoCustody.Cli.Commands;
 
-var root = new RootCommand("mongocustody — HIPAA-compliant MongoDB backup and restore CLI.");
+var root = new RootCommand("mongocustody — MongoDB backup and restore CLI.");
 
 root.Add(HealthCommand.Build());
 root.Add(BackupCommand.Build());

@@ -15,7 +15,7 @@ namespace MongoCustody.Connectors;
 /// Azure Cosmos DB for MongoDB (RU-based API).
 ///
 /// The connection string is resolved lazily from the secret provider
-/// using the key <c>mongocustody-mongo-connection-string</c>.
+/// using the key <c>{GlobalConst.KEYNAME_MONGODB_CONNSTRING}</c>.
 /// If the secret is absent, <see cref="MongoCustodyConfiguration.MongoDBAccountEndpoint"/>
 /// is used as the connection string (useful for Cosmos DB managed identity
 /// endpoints that embed no credentials).
@@ -24,6 +24,8 @@ public sealed class MongoDbConnector : IBackupSourceConnector
 {
     private readonly MongoCustodyConfiguration _config;
     private readonly ISecretProvider _secretProvider;
+
+    private const int _batchSize = 100;
 
     // Lazily initialised on first use — avoids blocking DI construction
     private IMongoClient? _client;
@@ -78,7 +80,7 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var options = new FindOptions<BsonDocument>
         {
             Sort = sort,
-            BatchSize = 100,
+            BatchSize = _batchSize,
             NoCursorTimeout = false
         };
 
@@ -105,12 +107,12 @@ public sealed class MongoDbConnector : IBackupSourceConnector
             .ConfigureAwait(false);
 
         long queryFromTs = fromTimestamp - bufferSeconds;
-        var filter = Builders<BsonDocument>.Filter.Gt("_ts", queryFromTs);
-        var sort = Builders<BsonDocument>.Sort.Ascending("_ts").Ascending("_id");
+        var filter = Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, queryFromTs);
+        var sort = Builders<BsonDocument>.Sort.Ascending(MongoCustodyConfiguration.AttributeName_ts).Ascending("_id");
         var options = new FindOptions<BsonDocument>
         {
             Sort = sort,
-            BatchSize = 100,
+            BatchSize = _batchSize,
             NoCursorTimeout = false
         };
 
@@ -160,11 +162,12 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         //   isDeleted absent/false  — document is still live
         var notDeleted = Builders<BsonDocument>.Filter.Or(
             Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists("isDeleted")),
-            Builders<BsonDocument>.Filter.Eq("isDeleted", false));
+                Builders<BsonDocument>.Filter.Exists(MongoCustodyConfiguration.AttributeName_Deleted)),
+            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, false)
+        );
 
         var filter = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Gt("_ts", anchorTs),
+            Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, anchorTs),
             notDeleted);
 
         return await collection
@@ -191,12 +194,14 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         //   OR (isDeleted=true AND _ts > anchorTs)
         var notDeleted = Builders<BsonDocument>.Filter.Or(
             Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists("isDeleted")),
-            Builders<BsonDocument>.Filter.Eq("isDeleted", false));
+                Builders<BsonDocument>.Filter.Exists(MongoCustodyConfiguration.AttributeName_Deleted)),
+            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, false)
+        );
 
         var deletedAfterAnchor = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Eq("isDeleted", true),
-            Builders<BsonDocument>.Filter.Gt("_ts", anchorTs));
+            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, true),
+            Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, anchorTs)
+        );
 
         var filter = Builders<BsonDocument>.Filter.Or(notDeleted, deletedAfterAnchor);
 
@@ -247,7 +252,7 @@ public sealed class MongoDbConnector : IBackupSourceConnector
             if (_client is not null) return _client;
 
             var connectionString = await _secretProvider
-                .GetSecretAsync("mongocustody-mongo-connection-string", ct)
+                .GetSecretAsync(GlobalConst.KEYNAME_MONGODB_CONNSTRING, ct)
                 .ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(connectionString))

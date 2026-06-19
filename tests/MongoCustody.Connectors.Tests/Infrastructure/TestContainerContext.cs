@@ -1,3 +1,4 @@
+using DotNet.Testcontainers.Images;
 using Testcontainers.Azurite;
 using Testcontainers.MongoDb;
 
@@ -59,12 +60,12 @@ internal static class TestContainerContext
     {
         try
         {
-            _azurite = new AzuriteBuilder()
-                .WithImage("mcr.microsoft.com/azure-storage/azurite:latest")
+            _azurite = new AzuriteBuilder(
+                new DockerImage("mcr.microsoft.com/azure-storage/azurite:latest"))
                 .Build();
 
-            _mongo = new MongoDbBuilder()
-                .WithImage("mongo:7")
+            _mongo = new MongoDbBuilder(
+                new DockerImage("mongo:7"))
                 .Build();
 
             await Task.WhenAll(_azurite.StartAsync(), _mongo.StartAsync())
