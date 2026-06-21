@@ -99,4 +99,14 @@ public interface IMongoCustodyService
         string databaseName,
         DateTimeOffset targetDate,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Assembles an audit report for the specified date range or a single
+    /// restore operation. The returned <see cref="Models.AuditReport"/> is a
+    /// structured object — the caller is responsible for rendering and
+    /// persisting it (e.g., as a Markdown file).
+    /// </summary>
+    Task<Models.AuditReport> GenerateAuditReportAsync(
+        Models.AuditReportRequest request,
+        CancellationToken ct = default);
 }

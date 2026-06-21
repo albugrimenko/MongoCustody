@@ -361,4 +361,26 @@ public sealed class MongoCustodyService : IMongoCustodyService
         DateTimeOffset targetDate,
         CancellationToken ct = default)
         => _metadata.ResolveRestoreChainAsync(databaseName, targetDate, ct);
+
+    // ------------------------------------------------------------------ //
+    //  Audit report
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public Task<Models.AuditReport> GenerateAuditReportAsync(
+        Models.AuditReportRequest request,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.RestoreId))
+        {
+            if (request.From is null || request.To is null)
+                throw new ArgumentException(
+                    "Either RestoreId or both From and To must be set on AuditReportRequest.");
+            if (request.From > request.To)
+                throw new ArgumentException("From must not be later than To.");
+        }
+
+        var engine = new AuditReportEngine(_metadata);
+        return engine.RunAsync(request, ct);
+    }
 }

@@ -114,6 +114,7 @@ MongoCustody/
 │           ├── RestoreCommand
 │           ├── BackupsCommand
 │           ├── ValidateCommand
+│           ├── ReportCommand
 │           └── HealthCommand
 │
 └── tests/
@@ -492,6 +493,61 @@ Multiple levels can be passed as space-separated values (`--level structural cou
 
 ---
 
+#### Generate an audit report
+
+```bash
+# Range report — all databases
+mongocustody report generate \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z
+
+# Range report — single database
+mongocustody report generate \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --database your-database \
+  --output-file Q1-2025-your-database-audit.md
+
+# Single-restore report (for a specific incident or auditor request)
+mongocustody report generate \
+  --restore-id b7c1d4e2-1234-5678-9abc-def012345678 \
+  --generated-by "Jane Smith, Compliance Officer"
+```
+
+The `--output-file` path is optional. When omitted, a filename is automatically
+generated:
+- Range mode: `mongocustody-audit-{from:yyyy-MM-dd}_{to:yyyy-MM-dd}.md`
+- Single-restore mode: `mongocustody-restore-{first-8-chars-of-id}.md`
+
+A brief summary is always printed to stdout; the full Markdown report is written
+to the file. Example stdout output:
+
+```
+Audit Report — 2025-01-01 to 2025-03-31
+  Full backups     : 1 completed, 0 failed
+  Restore ops      : 2 completed, 0 failed
+  Documents backed : 1,420,183
+
+Full report written to: /home/ops/mongocustody-audit-2025-01-01_2025-03-31.md
+```
+
+The Markdown file contains an executive summary table, a full backup activity
+section (range mode only), and a restore activity section — including the
+restore chain narrative for each restore:
+
+```
+To reach the requested restore point of 2025-02-13 23:59 UTC, the following
+backups were applied in sequence:
+
+| Step | Type        | Backup date         | Documents written |
+|------|-------------|---------------------|-------------------|
+| 1    | Full backup | 2025-01-01 01:00 UTC| 1,420,183 inserted|
+| 2    | Incremental | 2025-02-10 01:00 UTC| 8,431 upserted    |
+| 3    | Incremental | 2025-02-11 01:00 UTC| 2,017 upserted    |
+```
+
+---
+
 ## Restore Procedure
 
 Restore is always two steps: apply the full backup, then replay subsequent operations in order.
@@ -708,7 +764,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 7 | Incremental restore and validation | Planned |
 | 8 | Checkpoint engine | Planned |
 | 9 | DI wiring and public API | Planned |
-| 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`); live progress bar for backup and restore | ✅ Complete |
+| 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`, `report`); live progress bar for backup and restore; HIPAA audit report generation | ✅ Complete |
 
 ---
 

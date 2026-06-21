@@ -87,6 +87,35 @@ public interface IMetadataRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all <see cref="RestoreRecord"/>s whose
+    /// <see cref="RestoreRecord.RequestedAtUtc"/> falls within
+    /// [<paramref name="from"/>, <paramref name="to"/>] inclusive.
+    /// Results are ordered oldest-first.
+    /// </summary>
+    Task<IReadOnlyList<RestoreRecord>> ListRestoreRecordsAsync(
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Retrieves a single <see cref="RestoreRecord"/> by its restore ID.
+    /// Returns <c>null</c> if not found.
+    /// </summary>
+    Task<RestoreRecord?> GetRestoreRecordAsync(
+        string restoreId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Reads a <see cref="BackupRecord"/> manifest directly by folder path.
+    /// Used during audit report generation to annotate restore chain steps
+    /// with backup type, date, and document counts.
+    /// Returns <c>null</c> if the manifest is absent (failed or incomplete backup).
+    /// </summary>
+    Task<BackupRecord?> GetBackupRecordByFolderAsync(
+        string folderPath,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Verifies the connector can reach the metadata store.
     /// Returns <c>true</c> and an optional latency if reachable.
     /// </summary>

@@ -285,6 +285,15 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         var json = JsonSerializer.Serialize(record, JsonOptions);
         var blobPath = StoragePathHelper.RestoreRequestBlobPath(record.RestoreId);
         await WriteTextBlobAsync(blobPath, json, ct).ConfigureAwait(false);
+
+        // Write the monthly index pointer so restore records can be listed
+        // by date range without scanning the full restores/ prefix.
+        var pointerPath = StoragePathHelper.RestoreIndexPointerBlobPath(
+            record.RestoreId, record.RequestedAtUtc);
+        var pointerJson = JsonSerializer.Serialize(
+            new RestoreIndexPointer(record.RestoreId, record.RequestedAtUtc),
+            JsonOptions);
+        await WriteTextBlobAsync(pointerPath, pointerJson, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -292,9 +301,70 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         RestoreRecord record,
         CancellationToken ct = default)
     {
-        // Overwrite the same blob with updated status/completedAt
-        await SaveRestoreRecordAsync(record, ct).ConfigureAwait(false);
+        // Overwrite the same blob with updated status/completedAt.
+        // The index pointer is never updated — it records creation time only.
+        var json = JsonSerializer.Serialize(record, JsonOptions);
+        var blobPath = StoragePathHelper.RestoreRequestBlobPath(record.RestoreId);
+        await WriteTextBlobAsync(blobPath, json, ct).ConfigureAwait(false);
     }
+
+    // ------------------------------------------------------------------ //
+    //  Restore record listing and lookup
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RestoreRecord>> ListRestoreRecordsAsync(
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken ct = default)
+    {
+        var results = new List<RestoreRecord>();
+
+        foreach (var (year, month) in MonthsInRange(from, to))
+        {
+            var prefix = StoragePathHelper.RestoreIndexMonthPrefix(year, month);
+            await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                               .ConfigureAwait(false))
+            {
+                var pointerPath = $"{folder}{StoragePathHelper.RestoreIndexPointerFileName}";
+                var pointerJson = await ReadTextBlobAsync(pointerPath, ct).ConfigureAwait(false);
+                if (pointerJson is null) continue;
+
+                RestoreIndexPointer? pointer;
+                try { pointer = JsonSerializer.Deserialize<RestoreIndexPointer>(pointerJson, JsonOptions); }
+                catch { continue; }
+                if (pointer is null) continue;
+
+                if (pointer.RequestedAtUtc < from || pointer.RequestedAtUtc > to) continue;
+
+                var record = await GetRestoreRecordAsync(pointer.RestoreId, ct).ConfigureAwait(false);
+                if (record is not null)
+                    results.Add(record);
+            }
+        }
+
+        results.Sort((a, b) => a.RequestedAtUtc.CompareTo(b.RequestedAtUtc));
+        return results.AsReadOnly();
+    }
+
+    /// <inheritdoc />
+    public async Task<RestoreRecord?> GetRestoreRecordAsync(
+        string restoreId,
+        CancellationToken ct = default)
+    {
+        var blobPath = StoragePathHelper.RestoreRequestBlobPath(restoreId);
+        var json = await ReadTextBlobAsync(blobPath, ct).ConfigureAwait(false);
+        if (json is null) return null;
+
+        try { return JsonSerializer.Deserialize<RestoreRecord>(json, JsonOptions); }
+        catch { return null; }
+    }
+
+    /// <inheritdoc />
+    public Task<BackupRecord?> GetBackupRecordByFolderAsync(
+        string folderPath,
+        CancellationToken ct = default)
+        => ReadManifestAsync(folderPath, ct);
 
     // ------------------------------------------------------------------ //
     //  Health check
@@ -378,4 +448,27 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         var segments = folderPath.TrimEnd('/').Split('/');
         return segments[^1];
     }
+
+    /// <summary>
+    /// Enumerates all (year, month) pairs covered by the inclusive range [from, to].
+    /// </summary>
+    private static IEnumerable<(int Year, int Month)> MonthsInRange(
+        DateTimeOffset from,
+        DateTimeOffset to)
+    {
+        var current = new DateTimeOffset(from.Year, from.Month, 1, 0, 0, 0, TimeSpan.Zero);
+        var end     = new DateTimeOffset(to.Year,   to.Month,   1, 0, 0, 0, TimeSpan.Zero);
+        while (current <= end)
+        {
+            yield return (current.Year, current.Month);
+            current = current.AddMonths(1);
+        }
+    }
+
+    // Lightweight pointer stored in _restore_index for date-range listing.
+    private sealed record RestoreIndexPointer(
+        [property: System.Text.Json.Serialization.JsonPropertyName("restoreId")]
+        string RestoreId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("requestedAtUtc")]
+        DateTimeOffset RequestedAtUtc);
 }

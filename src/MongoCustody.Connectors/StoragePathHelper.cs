@@ -20,6 +20,8 @@ internal static class StoragePathHelper
     internal const string ManifestFileName       = BackupPathBuilder.ManifestFileName;
     internal const string RestoreRequestFileName = "restore-request.json";
     internal const string IndexPrefix            = "_index/";
+    internal const string RestoreIndexPrefix     = "_restore_index/";
+    internal const string RestoreIndexPointerFileName = "pointer.json";
 
     // ------------------------------------------------------------------ //
     //  Quarter helpers — delegate to BackupPathBuilder (single source of truth)
@@ -74,6 +76,27 @@ internal static class StoragePathHelper
     /// </summary>
     internal static string IndexBlobPath(string backupId)
         => $"{IndexPrefix}{backupId}";
+
+    /// <summary>
+    /// Returns the folder path for a restore index pointer.
+    /// <example><c>_restore_index/2025/02/{restoreId}/</c></example>
+    /// </summary>
+    internal static string RestoreIndexFolder(string restoreId, DateTimeOffset requestedAt)
+        => $"{RestoreIndexPrefix}{requestedAt.Year:D4}/{requestedAt.Month:D2}/{restoreId}/";
+
+    /// <summary>
+    /// Returns the pointer blob path within a restore index folder.
+    /// <example><c>_restore_index/2025/02/{restoreId}/pointer.json</c></example>
+    /// </summary>
+    internal static string RestoreIndexPointerBlobPath(string restoreId, DateTimeOffset requestedAt)
+        => $"{RestoreIndexFolder(restoreId, requestedAt)}{RestoreIndexPointerFileName}";
+
+    /// <summary>
+    /// Returns the listing prefix for all restore index entries in a given month.
+    /// <example><c>_restore_index/2025/02/</c></example>
+    /// </summary>
+    internal static string RestoreIndexMonthPrefix(int year, int month)
+        => $"{RestoreIndexPrefix}{year:D4}/{month:D2}/";
 
     // ------------------------------------------------------------------ //
     //  Container listing prefixes (Connector-specific)
