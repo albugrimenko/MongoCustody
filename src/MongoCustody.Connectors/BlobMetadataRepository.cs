@@ -158,7 +158,7 @@ public sealed class BlobMetadataRepository : IMetadataRepository
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
-        string databaseName,
+        string? databaseName,
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default)
@@ -175,7 +175,8 @@ public sealed class BlobMetadataRepository : IMetadataRepository
             {
                 var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
                 if (record is null) continue;
-                if (!string.Equals(record.DatabaseName, databaseName,
+                if (databaseName is not null &&
+                    !string.Equals(record.DatabaseName, databaseName,
                         StringComparison.OrdinalIgnoreCase)) continue;
                 if (record.BackupType != BackupType.Full) continue;
                 if (record.CompletedAtUtc < from || record.CompletedAtUtc > to) continue;

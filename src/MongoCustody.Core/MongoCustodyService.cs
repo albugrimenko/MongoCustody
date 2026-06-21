@@ -343,7 +343,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
 
     /// <inheritdoc />
     public Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
-        string databaseName,
+        string? databaseName,
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default)

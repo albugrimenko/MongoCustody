@@ -74,13 +74,14 @@ public interface IMetadataRepository
     Task UpdateRestoreRecordAsync(RestoreRecord record, CancellationToken ct = default);
 
     /// <summary>
-    /// Returns all full <see cref="BackupRecord"/>s for the given database
-    /// whose <see cref="BackupRecord.CompletedAtUtc"/> falls within
+    /// Returns all full <see cref="BackupRecord"/>s whose
+    /// <see cref="BackupRecord.CompletedAtUtc"/> falls within
     /// [<paramref name="from"/>, <paramref name="to"/>] inclusive.
-    /// Results are ordered oldest-first.
+    /// When <paramref name="databaseName"/> is <c>null</c>, records for all
+    /// databases are returned. Results are ordered oldest-first.
     /// </summary>
     Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
-        string databaseName,
+        string? databaseName,
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default);

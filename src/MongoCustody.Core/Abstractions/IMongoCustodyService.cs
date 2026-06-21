@@ -60,12 +60,13 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
-    /// Returns all completed full backups for the given database whose
-    /// <c>CompletedAtUtc</c> falls within [<paramref name="from"/>,
-    /// <paramref name="to"/>] inclusive, ordered oldest-first.
+    /// Returns all completed full backups whose <c>CompletedAtUtc</c> falls
+    /// within [<paramref name="from"/>, <paramref name="to"/>] inclusive,
+    /// ordered oldest-first. When <paramref name="databaseName"/> is
+    /// <c>null</c>, backups for all databases are returned.
     /// </summary>
     Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
-        string databaseName,
+        string? databaseName,
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default);

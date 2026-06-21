@@ -394,22 +394,34 @@ then prints the resolved backup chain to stderr so you can confirm what will be 
 #### List full backups
 
 ```bash
-# List all full backups in a date range (text output)
+# List all backups across all databases in a date range (summary view)
+mongocustody backups list \
+  --config mongocustody.json \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z
+
+# Filter to a single database
 mongocustody backups list \
   --config mongocustody.json \
   --database your-database \
   --from 2025-01-01T00:00:00Z \
   --to   2025-03-31T23:59:59Z
 
-# Machine-readable output for scripting and CI
+# Include per-collection breakdown (document count and chunk count per collection)
 mongocustody backups list \
   --database your-database \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --detail
+
+# Machine-readable output for scripting (--detail works here too)
+mongocustody backups list \
   --from 2025-01-01T00:00:00Z \
   --to   2025-03-31T23:59:59Z \
   --output json
 ```
 
-Results are ordered oldest-first and include backup ID, completion timestamp, quarter label, storage folder, and per-collection document and chunk counts.
+Results are ordered oldest-first. The default summary shows backup ID, database, completion timestamp, quarter label, storage folder, and aggregate totals (collection count, document count, chunk count). Add `--detail` (`-v`) to expand each backup with its full per-collection breakdown.
 
 #### Validate a backup
 
