@@ -77,7 +77,7 @@ Q2 Full Backup (Apr 1)   new chain begins
 
 **Self-contained storage.** All backup metadata lives in `manifest.json` files written alongside the backup chunks in Blob Storage. No separate metadata database is required. If the source database is completely lost, the backup system remains fully operational from Blob Storage alone — no circular dependency.
 
-**Soft-delete aware.** MongoCustody assumes all collections implement soft delete (`isDeleted` flag + `updatedAt` stamp). Deletions are therefore visible as document updates and are captured correctly by incremental backups. Hard-delete operations are out of scope.
+**Soft-delete aware.** MongoCustody assumes all collections implement soft delete (a boolean deleted flag + a server-managed timestamp). Deletions are therefore visible as document updates and are captured correctly by incremental backups. Hard-delete operations are out of scope. The field names default to `isDeleted` and `_ts` and are [configurable per database](#per-database-field-name-overrides).
 
 **Bounded restore complexity.** The maximum restore chain depth is 19 operations (1 full + 12 checkpoints + 6 daily incrementals), regardless of the restore target date. This is constant and predictable.
 
@@ -112,6 +112,7 @@ MongoCustody/
 │       └── Commands/
 │           ├── BackupCommand
 │           ├── RestoreCommand
+│           ├── BackupsCommand
 │           ├── ValidateCommand
 │           └── HealthCommand
 │
@@ -283,7 +284,11 @@ public class BackupJob(IMongoCustodyService backupService)
             {
                 Databases = ["your-database"],
                 TriggeredBy = "scheduler"
-            }, ct);
+            },
+            // Optional: receive per-collection progress reports
+            progress: new Progress<OperationProgress>(p =>
+                Console.WriteLine($"  {p.Completed}/{p.Total} ({p.Percentage:F0}%) — {p.CurrentItem}")),
+            ct);
 
         if (result.Status != BackupStatus.Completed)
             throw new InvalidOperationException(
@@ -318,7 +323,11 @@ var result = await backupService.RestoreAsync(
         RequestedBy = "admin@example.com",
         ApprovedBy = "compliance@example.com",
         Reason = "Data recovery — incident INC-2025-0042"
-    }, ct);
+    },
+    // Optional: receive per-collection-step progress reports across the full chain
+    progress: new Progress<OperationProgress>(p =>
+        Console.WriteLine($"  {p.Completed}/{p.Total} ({p.Percentage:F0}%) — {p.CurrentItem}")),
+    ct);
 ```
 
 #### Validate a backup
@@ -359,6 +368,14 @@ mongocustody backup full \
   [--output json]
 ```
 
+In text mode, a live progress bar is rendered to stderr while the backup runs:
+
+```
+⠹ Backing up 'your-database'  [████████░░░░░░░░░░░░]  4/12  33%  — users
+```
+
+The bar disappears when the operation completes and the result summary is printed.
+
 #### Restore
 
 ```bash
@@ -385,7 +402,12 @@ mongocustody restore \
 ```
 
 The restore command verifies the target database exists and is empty before writing any data,
-then prints the resolved backup chain to stderr so you can confirm what will be applied.
+then prints the resolved backup chain to stderr so you can confirm what will be applied. In
+text mode a live progress bar tracks collection steps across the entire restore chain:
+
+```
+⠼ Restoring 'source-database' → 'restore-target-db'  [██████░░░░░░░░░░░░░░]  3/15  20%  — projects
+```
 
 > **Target database provisioning is out of scope.** MongoCustody will not create the target
 > database. Provision it (with any required throughput or Cosmos DB settings) before running
@@ -523,11 +545,11 @@ Run validation at any time via the library or CLI:
 # Validate structural integrity and count consistency
 mongocustody validate --backup-id a3f8c2d1 --level structural,count
 
-# Full restore dry-run (requires a target account)
+# Full restore dry-run (requires an ephemeral target account)
 mongocustody validate \
   --backup-id a3f8c2d1 \
   --level dry-run \
-  --target-connection-string "mongodb://ephemeral-account..."
+  --dry-run-connection-string "mongodb://ephemeral-account..."
 ```
 
 ---
@@ -686,7 +708,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 7 | Incremental restore and validation | Planned |
 | 8 | Checkpoint engine | Planned |
 | 9 | DI wiring and public API | Planned |
-| 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`) | ✅ Complete |
+| 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`); live progress bar for backup and restore | ✅ Complete |
 
 ---
 
