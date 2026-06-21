@@ -89,6 +89,13 @@ internal static class RestoreCommand
             Console.Error.WriteLine(
                 $"Starting restore of '{database}' → '{targetDatabase}' as of {targetDate:u}…");
 
+            IProgress<MongoCustody.Core.Models.OperationProgress>? progress = null;
+            using var consoleProgress = format == OutputFormat.Text
+                ? new ConsoleProgress($"Restoring '{database}' → '{targetDatabase}'")
+                : null;
+            if (consoleProgress is not null)
+                progress = consoleProgress.AsProgress();
+
             var result = await svc.RestoreAsync(
                 new RestoreRequest
                 {
@@ -101,7 +108,8 @@ internal static class RestoreCommand
                     ApprovedBy             = approvedBy,
                     Reason                 = reason,
                     CorrelationId          = Guid.NewGuid().ToString()
-                }, ct);
+                },
+                progress, ct);
 
             if (format == OutputFormat.Json)
             {

@@ -134,7 +134,7 @@ public sealed class RestoreEngineTests
         var engine = MakeEngine(storageMock, targetMock);
         BackupRecord[] chain = [MakeFullBackupRecord(totalDocs: docCount)];
 
-        var result = await engine.RunAsync(MakeRequest(), chain, CancellationToken.None);
+        var result = await engine.RunAsync(MakeRequest(), chain, null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(1, result.CollectionResults.Count);
@@ -223,7 +223,7 @@ public sealed class RestoreEngineTests
         };
 
         var engine = MakeEngine(storageMock, targetMock);
-        var result = await engine.RunAsync(MakeRequest(), [fullRecord, incrRecord], CancellationToken.None);
+        var result = await engine.RunAsync(MakeRequest(), [fullRecord, incrRecord], null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(2, result.RestoreChain.Count);
@@ -297,7 +297,7 @@ public sealed class RestoreEngineTests
 
         var engine = MakeEngine(storageMock, targetMock);
         // Only restore col-a
-        var result = await engine.RunAsync(MakeRequest(colA), [record], CancellationToken.None);
+        var result = await engine.RunAsync(MakeRequest(colA), [record], null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(1, result.CollectionResults.Count);
@@ -345,7 +345,7 @@ public sealed class RestoreEngineTests
         };
 
         var engine = MakeEngine(storageMock, targetMock);
-        var result = await engine.RunAsync(MakeRequest(), [fullRecord, emptyIncr], CancellationToken.None);
+        var result = await engine.RunAsync(MakeRequest(), [fullRecord, emptyIncr], null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(2, result.RestoreChain.Count);
@@ -368,7 +368,7 @@ public sealed class RestoreEngineTests
             .ThrowsAsync(new InvalidOperationException("blob unavailable"));
 
         var engine = MakeEngine(storageMock, targetMock);
-        var result = await engine.RunAsync(MakeRequest(), [MakeFullBackupRecord()], CancellationToken.None);
+        var result = await engine.RunAsync(MakeRequest(), [MakeFullBackupRecord()], null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Failed, result.Status);
         Assert.IsNotNull(result.FailureReason);
@@ -386,7 +386,7 @@ public sealed class RestoreEngineTests
             new Mock<IRestoreTargetConnector>());
 
         var result = await engine.RunAsync(
-            MakeRequest(), [], CancellationToken.None);
+            MakeRequest(), [], null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(0, result.CollectionResults.Count);
@@ -418,7 +418,7 @@ public sealed class RestoreEngineTests
         request.CorrelationId = correlationId;
 
         var engine = MakeEngine(storageMock, targetMock);
-        var result = await engine.RunAsync(request, [MakeFullBackupRecord()], CancellationToken.None);
+        var result = await engine.RunAsync(request, [MakeFullBackupRecord()], null, CancellationToken.None);
 
         Assert.AreEqual(correlationId, result.CorrelationId);
     }

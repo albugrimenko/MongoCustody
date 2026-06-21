@@ -1,5 +1,6 @@
 using MongoCustody.Core.Abstractions;
 using MongoCustody.Core.Models;
+using System.Threading;
 
 namespace MongoCustody.Core.Engines;
 
@@ -51,6 +52,7 @@ internal sealed class FullBackupEngine
     /// </summary>
     internal async Task<BackupResult> RunAsync(
         BackupRequest request,
+        IProgress<OperationProgress>? progress,
         CancellationToken ct)
     {
         var startedAt     = DateTimeOffset.UtcNow;
@@ -65,7 +67,7 @@ internal sealed class FullBackupEngine
         string? overallFailure = null;
 
         var dbTasks = databases
-            .Select(dbName => RunForDatabaseAsync(dbName, request.TriggeredBy, correlationId, ct))
+            .Select(dbName => RunForDatabaseAsync(dbName, request.TriggeredBy, correlationId, progress, ct))
             .ToList();
         var dbResultTuples = await Task.WhenAll(dbTasks).ConfigureAwait(false);
 
@@ -105,6 +107,7 @@ internal sealed class FullBackupEngine
         string databaseName,
         string triggeredBy,
         string correlationId,
+        IProgress<OperationProgress>? progress,
         CancellationToken ct)
     {
         var backupId  = Guid.NewGuid().ToString();
@@ -145,9 +148,27 @@ internal sealed class FullBackupEngine
         var chunkWriter    = new ChunkWriter(_storage, _config.Policy);
         var collRecords    = new List<CollectionBackupRecord>(collections.Count);
         using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
-        var exportTasks    = collections
-            .Select(col => ExportCollectionAsync(
-                chunkWriter, folder, databaseName, col, semaphore, ct))
+
+        int completedCount = 0;
+        int totalCount     = collections.Count;
+
+        var exportTasks = collections
+            .Select(col => ExportCollectionAsync(chunkWriter, folder, databaseName, col, semaphore, ct)
+                .ContinueWith(
+                    task =>
+                    {
+                        int done = Interlocked.Increment(ref completedCount);
+                        progress?.Report(new OperationProgress
+                        {
+                            Completed   = done,
+                            Total       = totalCount,
+                            CurrentItem = col
+                        });
+                        return task.GetAwaiter().GetResult();
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default))
             .ToList();
 
         CollectionBackupRecord[] results;

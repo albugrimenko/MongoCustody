@@ -19,8 +19,14 @@ public interface IMongoCustodyService
     /// Runs a full backup — a complete export of all collections in the
     /// requested databases. Starts a new incremental chain.
     /// </summary>
+    /// <param name="progress">
+    /// Optional progress sink. Receives one <see cref="Models.OperationProgress"/>
+    /// report after each collection completes, enabling callers to render a
+    /// live progress indicator. Pass <c>null</c> to suppress reporting.
+    /// </param>
     Task<BackupResult> RunFullBackupAsync(
         BackupRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -48,8 +54,15 @@ public interface IMongoCustodyService
     /// provided target account.
     /// A <see cref="RestoreRecord"/> is written before any data is written.
     /// </summary>
+    /// <param name="progress">
+    /// Optional progress sink. Receives one <see cref="Models.OperationProgress"/>
+    /// report after each collection step completes. The total reflects all
+    /// collection operations across every step in the restore chain.
+    /// Pass <c>null</c> to suppress reporting.
+    /// </param>
     Task<RestoreResult> RestoreAsync(
         RestoreRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default);
 
     /// <summary>

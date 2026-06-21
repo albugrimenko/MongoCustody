@@ -44,13 +44,21 @@ internal static class BackupCommand
 
             Console.Error.WriteLine($"Starting full backup of '{database}'…");
 
+            IProgress<MongoCustody.Core.Models.OperationProgress>? progress = null;
+            using var consoleProgress = format == OutputFormat.Text
+                ? new ConsoleProgress($"Backing up '{database}'")
+                : null;
+            if (consoleProgress is not null)
+                progress = consoleProgress.AsProgress();
+
             var result = await svc.RunFullBackupAsync(
                 new BackupRequest
                 {
                     Databases     = [database],
                     TriggeredBy   = triggeredBy,
                     CorrelationId = Guid.NewGuid().ToString()
-                }, ct);
+                },
+                progress, ct);
 
             if (format == OutputFormat.Json)
             {

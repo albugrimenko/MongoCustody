@@ -100,6 +100,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
     /// <inheritdoc />
     public async Task<BackupResult> RunFullBackupAsync(
         BackupRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default)
     {
         var startedAt = DateTimeOffset.UtcNow;
@@ -129,7 +130,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
         }
 
         var engine = new FullBackupEngine(_source, _storage, _metadata, _config);
-        return await engine.RunAsync(request, ct).ConfigureAwait(false);
+        return await engine.RunAsync(request, progress, ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ //
@@ -160,7 +161,8 @@ public sealed class MongoCustodyService : IMongoCustodyService
 
     /// <inheritdoc />
     public async Task<RestoreResult> RestoreAsync(
-        RestoreRequest    request,
+        RestoreRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default)
     {
         var startedAt     = DateTimeOffset.UtcNow;
@@ -276,7 +278,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
         RestoreResult result;
         try
         {
-            result = await engine.RunAsync(request, chain, ct).ConfigureAwait(false);
+            result = await engine.RunAsync(request, chain, progress, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

@@ -115,7 +115,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         var result = await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(BackupType.Full, result.BackupType);
@@ -153,7 +153,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         var result = await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(0, result.DatabaseResults[0].TotalDocuments);
@@ -185,7 +185,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         metaMock.Verify(
             m => m.SaveBackupRecordAsync(It.IsAny<BackupRecord>(), It.IsAny<CancellationToken>()),
@@ -222,7 +222,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "scheduler" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.IsNotNull(capturedRecord);
         Assert.AreEqual(BackupType.Full, capturedRecord.BackupType);
@@ -255,7 +255,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         var result = await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Failed, result.Status);
         Assert.AreEqual(BackupStatus.Failed, result.DatabaseResults[0].Status);
@@ -285,7 +285,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         var result = await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Failed, result.Status);
         StringAssert.Contains(result.DatabaseResults[0].FailureReason!, "collections");
@@ -320,7 +320,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
         var result = await engine.RunAsync(
             new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Failed, result.Status);
         StringAssert.Contains(result.DatabaseResults[0].FailureReason!, "manifest");
@@ -377,7 +377,7 @@ public sealed class FullBackupEngineTests
         var engine = MakeEngine(sourceMock, storageMock, metaMock, config);
         var result = await engine.RunAsync(
             new BackupRequest { TriggeredBy = "test" }, // empty Databases → use all configured
-            CancellationToken.None);
+            null, CancellationToken.None);
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
         Assert.AreEqual(2, result.DatabaseResults.Count);
@@ -423,7 +423,7 @@ public sealed class FullBackupEngineTests
         {
             await engine.RunAsync(
                 new BackupRequest { Databases = [DbName], TriggeredBy = "test" },
-                cts.Token);
+                null, cts.Token);
         }
         catch (OperationCanceledException)
         {

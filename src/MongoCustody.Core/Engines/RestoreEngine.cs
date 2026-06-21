@@ -1,6 +1,7 @@
 using MongoCustody.Core.Abstractions;
 using MongoCustody.Core.Models;
 using System.IO.Compression;
+using System.Threading;
 
 namespace MongoCustody.Core.Engines;
 
@@ -62,9 +63,10 @@ internal sealed class RestoreEngine
     /// </param>
     /// <param name="ct">Cancellation token.</param>
     internal async Task<RestoreResult> RunAsync(
-        RestoreRequest            request,
+        RestoreRequest              request,
         IReadOnlyList<BackupRecord> chain,
-        CancellationToken         ct)
+        IProgress<OperationProgress>? progress,
+        CancellationToken           ct)
     {
         var startedAt     = DateTimeOffset.UtcNow;
         var correlationId = string.IsNullOrWhiteSpace(request.CorrelationId)
@@ -76,6 +78,12 @@ internal sealed class RestoreEngine
         var collectionFilter = request.Collections.Count > 0
             ? new HashSet<string>(request.Collections, StringComparer.OrdinalIgnoreCase)
             : null;
+
+        // Pre-compute total collection operations across the entire chain so the
+        // progress percentage is accurate before the first step begins.
+        int totalCollOps = chain.Sum(r => r.Collections.Count(c =>
+            collectionFilter is null || collectionFilter.Contains(c.CollectionName)));
+        int completedCollOps = 0;
 
         // Accumulates per-collection totals across all chain steps.
         var accumulated = new Dictionary<string, CollectionRestoreResult>(
@@ -104,9 +112,23 @@ internal sealed class RestoreEngine
             bool useInsert = isFirstStep && record.BackupType == BackupType.Full;
 
             using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
-            var stepTasks   = collectionsToRestore
-                .Select(c => RestoreCollectionAsync(
-                    request.TargetDatabaseName, c, semaphore, useInsert, ct))
+            var stepTasks = collectionsToRestore
+                .Select(c => RestoreCollectionAsync(request.TargetDatabaseName, c, semaphore, useInsert, ct)
+                    .ContinueWith(
+                        task =>
+                        {
+                            int done = Interlocked.Increment(ref completedCollOps);
+                            progress?.Report(new OperationProgress
+                            {
+                                Completed   = done,
+                                Total       = totalCollOps,
+                                CurrentItem = c.CollectionName
+                            });
+                            return task.GetAwaiter().GetResult();
+                        },
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default))
                 .ToList();
 
             CollectionRestoreResult[] stepResults;

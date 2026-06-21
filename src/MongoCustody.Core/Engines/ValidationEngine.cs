@@ -399,6 +399,7 @@ internal sealed class ValidationEngine
                 Reason                 = $"Level 4 dry-run for backup {record.BackupId}"
             },
             chain,
+            null,   // no progress reporting during validation dry-run
             ct).ConfigureAwait(false);
 
         if (restoreResult.Status != BackupStatus.Completed)
