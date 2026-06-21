@@ -402,7 +402,50 @@ mongocustody backups list \
 
 Results are ordered oldest-first and include backup ID, completion timestamp, quarter label, storage folder, and per-collection document and chunk counts.
 
-> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`, `validate`, `chain` (restore chain preview).
+#### Validate a backup
+
+```bash
+# L1 — structural integrity (default, runs fast, no live DB required)
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level structural
+
+# L1 + L2 — structural integrity and count consistency
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level structural count
+
+# All levels except dry-run
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level structural count incremental
+
+# L4 — full restore dry-run (requires an ephemeral target account)
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level dry-run \
+  --dry-run-connection-string "mongodb://ephemeral-account..."
+
+# All levels in one pass
+mongocustody validate \
+  --backup-id a3f8c2d1 \
+  --level all \
+  --dry-run-connection-string "mongodb://ephemeral-account..."
+
+# Machine-readable output
+mongocustody validate --backup-id a3f8c2d1 --level structural --output json
+```
+
+| Level flag | Alias | What it checks | Live DB needed |
+|---|---|---|---|
+| `structural` | `l1` | SHA-256 hash of each chunk matches manifest | No |
+| `count` | `l2` | Backup document count matches live DB count as of anchor | Yes |
+| `incremental` | `l3` | Incremental count ≥ changed documents in live DB since anchor | Yes |
+| `dry-run` | `l4` | Full restore to ephemeral target; verifies counts and spot-checks 100 documents | Yes (ephemeral) |
+
+Multiple levels can be passed as space-separated values (`--level structural count`) or comma-separated (`--level structural,count`). `--level all` runs all four levels and requires `--dry-run-connection-string`.
+
+> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`, `chain` (restore chain preview).
 
 ---
 
