@@ -115,7 +115,6 @@ internal static class ValidateCommand
                 foreach (var col in result.CollectionResults)
                 {
                     var icon = col.Passed ? "✓" : "✗";
-                    Console.WriteLine();
                     Console.WriteLine(
                         $"  {icon}  {col.CollectionName,-40} " +
                         $"manifest: {col.ManifestDocumentCount,10:N0} docs" +
@@ -149,9 +148,9 @@ internal static class ValidateCommand
                     "incremental"or "l3" => ValidationLevel.IncrementalCompleteness,
                     "dry-run"    or "l4" => ValidationLevel.RestoreDryRun,
                     "all"                => ValidationLevel.StructuralIntegrity |
-                                           ValidationLevel.CountConsistency |
-                                           ValidationLevel.IncrementalCompleteness |
-                                           ValidationLevel.RestoreDryRun,
+                                            ValidationLevel.CountConsistency |
+                                            ValidationLevel.IncrementalCompleteness |
+                                            ValidationLevel.RestoreDryRun,
                     _ => throw new ArgumentException(
                         $"Unknown validation level '{token}'. " +
                         $"Valid values: structural, count, incremental, dry-run, all " +
