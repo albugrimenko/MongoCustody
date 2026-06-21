@@ -20,8 +20,16 @@ internal static class RestoreCommand
 
         var targetConnOpt = new Option<string>("--target-connection-string", ["--target"])
         {
-            Description = "MongoDB connection string of the (empty) restore target account.",
+            Description = "MongoDB connection string for the target MongoDB instance.",
             Required    = true
+        };
+
+        var targetDatabaseOpt = new Option<string>("--target-database", ["--target-db"])
+        {
+            Description =
+                "Name of the database in the target instance to restore into. " +
+                "The database must exist and contain no collections.",
+            Required = true
         };
 
         var requestedByOpt = new Option<string>("--requested-by")
@@ -54,6 +62,7 @@ internal static class RestoreCommand
         cmd.Add(databaseOpt);
         cmd.Add(targetDateOpt);
         cmd.Add(targetConnOpt);
+        cmd.Add(targetDatabaseOpt);
         cmd.Add(requestedByOpt);
         cmd.Add(approvedByOpt);
         cmd.Add(reasonOpt);
@@ -62,11 +71,12 @@ internal static class RestoreCommand
 
         cmd.SetAction(async (parseResult, ct) =>
         {
-            var configPath  = parseResult.GetValue(configOpt)!;
-            var database    = parseResult.GetValue(databaseOpt)!;
-            var targetDate  = parseResult.GetValue(targetDateOpt);
-            var targetConn  = parseResult.GetValue(targetConnOpt)!;
-            var requestedBy = parseResult.GetValue(requestedByOpt)!;
+            var configPath      = parseResult.GetValue(configOpt)!;
+            var database        = parseResult.GetValue(databaseOpt)!;
+            var targetDate      = parseResult.GetValue(targetDateOpt);
+            var targetConn      = parseResult.GetValue(targetConnOpt)!;
+            var targetDatabase  = parseResult.GetValue(targetDatabaseOpt)!;
+            var requestedBy     = parseResult.GetValue(requestedByOpt)!;
             var approvedBy  = parseResult.GetValue(approvedByOpt)!;
             var reason      = parseResult.GetValue(reasonOpt)!;
             var collections = parseResult.GetValue(collectionsOpt) ?? [];
@@ -76,13 +86,15 @@ internal static class RestoreCommand
             try { svc = ServiceFactory.Build(configPath); }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
-            Console.Error.WriteLine($"Starting restore of '{database}' as of {targetDate:u}…");
+            Console.Error.WriteLine(
+                $"Starting restore of '{database}' → '{targetDatabase}' as of {targetDate:u}…");
 
             var result = await svc.RestoreAsync(
                 new RestoreRequest
                 {
                     DatabaseName           = database,
                     TargetConnectionString = targetConn,
+                    TargetDatabaseName     = targetDatabase,
                     TargetDate             = targetDate,
                     Collections            = [.. collections],
                     RequestedBy            = requestedBy,

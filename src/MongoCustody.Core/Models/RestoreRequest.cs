@@ -18,11 +18,21 @@ public sealed class RestoreRequest
     public DateTimeOffset TargetDate { get; set; }
 
     /// <summary>
-    /// MongoDB connection string for the empty target account into which
-    /// the data will be restored.
-    /// NEVER use the production connection string here.
+    /// MongoDB connection string for the target MongoDB instance.
+    /// The instance must be reachable and the database named by
+    /// <see cref="TargetDatabaseName"/> must exist and be empty.
+    /// NEVER use the production source connection string here.
     /// </summary>
     public string TargetConnectionString { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Name of the database in the target instance to restore into.
+    /// The database must already exist (be provisioned) and must contain
+    /// no collections. MongoCustody will not create or provision the database
+    /// — this is intentional, as databases sometimes require special
+    /// provisioning (throughput settings, Cosmos DB options, etc.).
+    /// </summary>
+    public string TargetDatabaseName { get; set; } = string.Empty;
 
     /// <summary>
     /// Optional subset of collection names to restore.

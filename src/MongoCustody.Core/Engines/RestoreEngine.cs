@@ -106,7 +106,7 @@ internal sealed class RestoreEngine
             using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
             var stepTasks   = collectionsToRestore
                 .Select(c => RestoreCollectionAsync(
-                    record.DatabaseName, c, semaphore, useInsert, ct))
+                    request.TargetDatabaseName, c, semaphore, useInsert, ct))
                 .ToList();
 
             CollectionRestoreResult[] stepResults;

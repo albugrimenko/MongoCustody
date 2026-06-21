@@ -185,25 +185,44 @@ public sealed class MongoCustodyService : IMongoCustodyService
         if (string.IsNullOrWhiteSpace(request.TargetConnectionString))
             return QuickFail("TargetConnectionString is required.", startedAt, correlationId, request.TargetDate);
 
+        if (string.IsNullOrWhiteSpace(request.TargetDatabaseName))
+            return QuickFail("TargetDatabaseName is required.", startedAt, correlationId, request.TargetDate);
+
         if (_restoreTargetFactory is null)
             return QuickFail(
                 "No IRestoreTargetConnectorFactory is registered. " +
                 "Ensure MongoCustody.Connectors is wired into the DI container.",
                 startedAt, correlationId, request.TargetDate);
 
+        // Pre-flight: verify target database exists and is empty before writing the audit record.
+        await using var target = _restoreTargetFactory.Create(request.TargetConnectionString);
+        try
+        {
+            await target.EnsureEmptyDatabaseAsync(request.TargetDatabaseName, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return QuickFail(
+                $"Target database pre-flight check failed: {ex.Message}",
+                startedAt, correlationId, request.TargetDate);
+        }
+
         // Write the pre-restore audit record BEFORE touching the target.
         var restoreRecord = new RestoreRecord
         {
-            RestoreId      = Guid.NewGuid().ToString(),
-            RequestedAtUtc = startedAt,
-            Status         = BackupStatus.Running,
-            DatabaseName   = request.DatabaseName,
-            TargetDate     = request.TargetDate,
-            Collections    = request.Collections,
-            RequestedBy    = request.RequestedBy,
-            ApprovedBy     = request.ApprovedBy,
-            Reason         = request.Reason,
-            CorrelationId  = correlationId
+            RestoreId          = Guid.NewGuid().ToString(),
+            RequestedAtUtc     = startedAt,
+            Status             = BackupStatus.Running,
+            DatabaseName       = request.DatabaseName,
+            TargetDatabaseName = request.TargetDatabaseName,
+            TargetDate         = request.TargetDate,
+            Collections        = request.Collections,
+            RequestedBy        = request.RequestedBy,
+            ApprovedBy         = request.ApprovedBy,
+            Reason             = request.Reason,
+            CorrelationId      = correlationId
         };
 
         try
@@ -251,9 +270,8 @@ public sealed class MongoCustodyService : IMongoCustodyService
                     startedAt, correlationId, request.TargetDate),
                 ct);
 
-        // Create the per-request target connector and run the engine.
-        await using var target  = _restoreTargetFactory.Create(request.TargetConnectionString);
-        var             engine  = new RestoreEngine(_storage, target, _config);
+        // Run the restore engine (target connector was already created for the pre-flight check).
+        var engine = new RestoreEngine(_storage, target, _config);
 
         RestoreResult result;
         try

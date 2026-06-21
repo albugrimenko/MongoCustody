@@ -1,9 +1,9 @@
 namespace MongoCustody.Core.Abstractions;
 
 /// <summary>
-/// Abstracts write access to the target MongoDB account used during a restore
-/// operation. The target is always a separate, empty account — never the
-/// production source.
+/// Abstracts write access to the target MongoDB instance used during a
+/// restore operation. The target database must be pre-provisioned, empty,
+/// and must never be the production source database.
 ///
 /// <para>
 /// The connector is created per-request from a connection string supplied
@@ -14,6 +14,16 @@ namespace MongoCustody.Core.Abstractions;
 /// </summary>
 public interface IRestoreTargetConnector : IAsyncDisposable
 {
+    /// <summary>
+    /// Pre-flight check that confirms the target database is ready to receive
+    /// a restore. Throws <see cref="InvalidOperationException"/> when:
+    /// <list type="bullet">
+    ///   <item>The database does not exist (has not been provisioned).</item>
+    ///   <item>The database already contains one or more collections.</item>
+    /// </list>
+    /// Must be called before any data is written to the target.
+    /// </summary>
+    Task EnsureEmptyDatabaseAsync(string databaseName, CancellationToken ct = default);
     /// <summary>
     /// Bulk-inserts raw BSON documents into a collection in the restore
     /// target. Used for the full-backup baseline step, where the target

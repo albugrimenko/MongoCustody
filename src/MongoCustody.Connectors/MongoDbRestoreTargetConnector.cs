@@ -48,6 +48,40 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
     }
 
     /// <inheritdoc />
+    public async Task EnsureEmptyDatabaseAsync(
+        string databaseName,
+        CancellationToken ct = default)
+    {
+        // Verify the database exists (appears in the server's database list).
+        using var dbCursor = await _client
+            .ListDatabaseNamesAsync(cancellationToken: ct)
+            .ConfigureAwait(false);
+
+        var dbNames = await dbCursor.ToListAsync(ct).ConfigureAwait(false);
+        if (!dbNames.Contains(databaseName, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                $"Target database '{databaseName}' does not exist on the target instance. " +
+                $"Provision the database before running a restore.");
+
+        // Verify the database has no collections.
+        var db = _client.GetDatabase(databaseName);
+        using var colCursor = await db
+            .ListCollectionNamesAsync(cancellationToken: ct)
+            .ConfigureAwait(false);
+
+        var collections = await colCursor.ToListAsync(ct).ConfigureAwait(false);
+        if (collections.Count > 0)
+        {
+            var sample = string.Join(", ", collections.Take(5));
+            var more   = collections.Count > 5 ? $" … and {collections.Count - 5} more" : string.Empty;
+            throw new InvalidOperationException(
+                $"Target database '{databaseName}' is not empty — " +
+                $"found {collections.Count} collection(s): {sample}{more}. " +
+                $"Drop all collections before running a restore.");
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<long> InsertManyAsync(
         string databaseName,
         string collectionName,

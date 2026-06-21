@@ -309,11 +309,12 @@ var result = await backupService.RunIncrementalBackupAsync(
 var result = await backupService.RestoreAsync(
     new RestoreRequest
     {
-        DatabaseName = "your-database",
+        DatabaseName = "source-database",          // backup source database name
         TargetDate = new DateTimeOffset(2025, 4, 15, 0, 0, 0, TimeSpan.Zero),
-        TargetConnectionString = "mongodb://restore-account...",
+        TargetConnectionString = "mongodb://restore-instance...",
+        TargetDatabaseName = "restore-target-db",  // must exist and be empty
         // Optional: restore only specific collections
-        Collections = ["collection-a", "collection-b"],   // optional subset
+        Collections = ["collection-a", "collection-b"],
         RequestedBy = "admin@example.com",
         ApprovedBy = "compliance@example.com",
         Reason = "Data recovery — incident INC-2025-0042"
@@ -362,25 +363,33 @@ mongocustody backup full \
 
 ```bash
 # Restore all collections to a point in time
+# --target-database must exist in the target instance and be empty (no collections)
 mongocustody restore \
   --config mongocustody.json \
-  --database your-database \
+  --database source-database \
   --target-date 2025-04-15T00:00:00Z \
-  --target-connection-string "mongodb://restore-account..." \
+  --target-connection-string "mongodb://restore-instance..." \
+  --target-database restore-target-db \
   --requested-by admin@example.com \
   --approved-by compliance@example.com \
   --reason "INC-2025-0042"
 
-# Restore a subset of collections
+# Restore a subset of collections into a differently-named target database
 mongocustody restore \
   --config mongocustody.json \
-  --database your-database \
+  --database source-database \
   --target-date 2025-04-15T00:00:00Z \
-  --target-connection-string "mongodb://restore-account..." \
-  --collections patients appointments
+  --target-connection-string "mongodb://restore-instance..." \
+  --target-database restore-target-db \
+  --collections users projects
 ```
 
-The restore command prints the resolved backup chain to stderr before writing any data, so you can verify what will be applied.
+The restore command verifies the target database exists and is empty before writing any data,
+then prints the resolved backup chain to stderr so you can confirm what will be applied.
+
+> **Target database provisioning is out of scope.** MongoCustody will not create the target
+> database. Provision it (with any required throughput or Cosmos DB settings) before running
+> restore. The database must be empty — no collections — when the restore starts.
 
 #### List full backups
 
@@ -473,9 +482,15 @@ All restore operations use `replaceOne` with `upsert: true` keyed on `_id`. This
 - A document soft-deleted after the full backup appears in an incremental with `isDeleted: true`. Upsert writes this final state correctly.
 - The 5-minute buffer may produce harmless duplicate upserts near anchor boundaries. These are idempotent.
 
-### Important: never restore into the production account
+### Restore target requirements
 
-Always restore to a new, empty target account. Verify counts and spot-check documents before any promotion step. The restore operation records a `RestoreRecord` (who requested, who approved, target date, reason) before any data is written.
+Restore writes into a **named database within an existing MongoDB instance**. The target database:
+
+1. **Must exist** — MongoCustody will not create or provision the database. Provision it (including any required throughput, tier, or Cosmos DB configuration) before running restore.
+2. **Must be empty** — no collections. MongoCustody checks this before writing any data and aborts if any collections are found.
+3. **Must not be the production source** — always use a separate instance or at minimum a separate database name.
+
+A `RestoreRecord` (who requested, who approved, target database, reason) is written to Blob Storage before any data is written to the target. Verify counts and spot-check documents before promoting the restored database to production.
 
 ---
 

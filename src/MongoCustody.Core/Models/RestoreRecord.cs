@@ -35,6 +35,14 @@ public sealed class RestoreRecord
     [JsonPropertyName("databaseName")]
     public string DatabaseName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Name of the target database the data was restored into.
+    /// May differ from <see cref="DatabaseName"/> when restoring to a
+    /// differently-named database within an existing instance.
+    /// </summary>
+    [JsonPropertyName("targetDatabaseName")]
+    public string TargetDatabaseName { get; set; } = string.Empty;
+
     /// <summary>The point in time that was restored to.</summary>
     [JsonPropertyName("targetDate")]
     public DateTimeOffset TargetDate { get; set; }
