@@ -151,19 +151,21 @@ dotnet add package MongoCustody.Connectors
 
 ## Configuration
 
-All configuration maps to `MongoCustodyConfiguration`. Provide it via a JSON file, environment variables, or programmatically.
+All configuration maps to `MongoCustodyConfiguration`. Provide it via a `mongocustody.json` file or programmatically.
+
+**No URIs or connection strings belong in the config file.** Every environment-specific value — connection strings, account endpoints, and the Key Vault URI itself — is resolved at runtime from environment variables (or from Key Vault, once the vault URI is known). The config file only holds key names that tell MongoCustody *which* environment variable to read.
 
 ### Configuration file (`mongocustody.json`)
 
 ```json
 {
-  "mongoDBAccountEndpoint": "https://your-account.mongo.cosmos.azure.com:10255",
-  "storageAccountEndpoint": "https://yourbackupstorage.blob.core.windows.net",
   "storageContainerName": "backups",
   "databases": [
     {
       "databaseName": "your-database",
-      "excludedCollections": ["_sessions", "_changelog"]
+      "excludedCollections": ["_sessions", "_changelog"],
+      "timestampAttribute": "_ts",
+      "deletedAttribute": "isDeleted"
     }
   ],
   "policy": {
@@ -175,27 +177,76 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a JSON fil
     "chunkSizeGb": 10
   },
   "secrets": {
-    "provider": "AzureKeyVault",
-    "keyVaultUri": "https://your-keyvault.vault.azure.net/"
+    "provider": "EnvironmentVariables",
+    "keyVaultUriKey": "MONGOCUSTODY_KEYVAULT_URI",
+    "mongoConnectionStringKey": "MONGOCUSTODY_MONGO_CONNECTION_STRING",
+    "mongoAccountEndpointKey": "MONGOCUSTODY_MONGO_ENDPOINT",
+    "storageConnectionStringKey": "MONGOCUSTODY_STORAGE_CONNECTION_STRING",
+    "storageAccountEndpointKey": "MONGOCUSTODY_STORAGE_ENDPOINT"
   }
 }
 ```
+
+All `secrets.*Key` values are overridable. The defaults shown above are used when the field is omitted.
 
 ### Secret providers
 
 | Provider | When to use |
 |---|---|
-| `AzureKeyVault` | Azure-hosted workloads (Azure Functions, Container Apps, App Service). Uses `DefaultAzureCredential` — works with system-assigned managed identity on Linux and Windows. |
 | `EnvironmentVariables` | Local development, CI pipelines, and any host where secrets are injected as environment variables. |
+| `AzureKeyVault` | Azure-hosted workloads (Azure Functions, Container Apps, App Service). Uses `DefaultAzureCredential` — works with system-assigned managed identity on Linux and Windows. |
 
-Sensitive values (connection strings, storage keys) should never appear in the configuration file in plain text. Leave them empty in the file and supply them via the configured secret provider.
+### Environment variables
 
-### Key Vault secret naming convention
+All environment-specific values are supplied via environment variables. The variable names are configurable via the `secrets.*Key` fields above; these are the defaults:
 
-| Secret name | Value |
-|---|---|
-| `mongocustody-mongo-connection-string` | MongoDB connection string |
-| `mongocustody-storage-connection-string` | Azure Blob Storage connection string (if not using managed identity endpoint) |
+| Environment variable | Used for | Required when |
+|---|---|---|
+| `MONGOCUSTODY_MONGO_CONNECTION_STRING` | MongoDB connection string | Always (or use endpoint below) |
+| `MONGOCUSTODY_MONGO_ENDPOINT` | MongoDB account endpoint URL | Managed identity — when no connection string is set |
+| `MONGOCUSTODY_STORAGE_CONNECTION_STRING` | Azure Blob Storage connection string | Always (or use endpoint below) |
+| `MONGOCUSTODY_STORAGE_ENDPOINT` | Azure Blob Storage account endpoint URL | Managed identity — when no connection string is set |
+| `MONGOCUSTODY_KEYVAULT_URI` | Azure Key Vault URI | Only when `provider` is `AzureKeyVault` |
+
+MongoCustody tries the connection string first; if it is absent it falls back to the endpoint URL (managed identity path). At least one of each pair must be set.
+
+### AzureKeyVault provider
+
+When using Key Vault, the Key Vault URI itself comes from the environment variable named by `keyVaultUriKey` (default `MONGOCUSTODY_KEYVAULT_URI`). The remaining secret keys become Key Vault secret names and must follow Key Vault naming rules (`[a-zA-Z0-9-]` only — no underscores). Use hyphen-separated names for Key Vault:
+
+```json
+"secrets": {
+  "provider": "AzureKeyVault",
+  "keyVaultUriKey": "MONGOCUSTODY_KEYVAULT_URI",
+  "mongoConnectionStringKey": "mongocustody-mongo-connection-string",
+  "storageConnectionStringKey": "mongocustody-storage-connection-string"
+}
+```
+
+Then set a single environment variable pointing to your vault — all other secrets are fetched from Key Vault at runtime:
+
+```bash
+export MONGOCUSTODY_KEYVAULT_URI="https://your-keyvault.vault.azure.net/"
+```
+
+### Per-database field name overrides
+
+If your collections use different field names for the timestamp or soft-delete flag, override them per database:
+
+```json
+"databases": [
+  {
+    "databaseName": "legacy-db",
+    "timestampAttribute": "updatedTs",
+    "deletedAttribute": "delete_flag"
+  }
+]
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `timestampAttribute` | `_ts` | Unix-second timestamp field used for incremental change detection |
+| `deletedAttribute` | `isDeleted` | Boolean soft-delete flag used during validation |
 
 ---
 
@@ -289,12 +340,7 @@ foreach (var collection in result.CollectionResults)
 ### As a CLI Tool
 
 All commands accept `--config <path>` (default: `mongocustody.json`) and `--output text|json`.
-Connection strings are never stored in the config file — supply them via environment variables:
-
-| Environment variable | Value |
-|---|---|
-| `MONGOCUSTODY_MONGO_CONNECTION_STRING` | MongoDB source connection string |
-| `MONGOCUSTODY_STORAGE_CONNECTION_STRING` | Azure Blob Storage connection string |
+No URIs or connection strings are stored in the config file — supply them via environment variables as described in the [Configuration](#configuration) section above.
 
 #### Health check
 

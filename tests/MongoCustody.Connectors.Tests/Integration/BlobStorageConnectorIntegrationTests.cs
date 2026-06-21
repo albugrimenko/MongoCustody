@@ -29,8 +29,7 @@ public sealed class BlobStorageConnectorIntegrationTests : IntegrationTestBase
 
         var config = new MongoCustodyConfiguration
         {
-            StorageContainerName   = ContainerName,
-            StorageAccountEndpoint = "http://placeholder" // unused — connection string takes precedence
+            StorageContainerName = ContainerName
         };
 
         Environment.SetEnvironmentVariable(

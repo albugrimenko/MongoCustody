@@ -28,7 +28,6 @@ public sealed class MongoDbConnectorIntegrationTests : IntegrationTestBase
 
         var config = new MongoCustodyConfiguration
         {
-            MongoDBAccountEndpoint = MongoConnectionString,
             Databases =
             [
                 new DatabaseConfiguration

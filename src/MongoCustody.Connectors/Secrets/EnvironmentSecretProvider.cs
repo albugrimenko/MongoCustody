@@ -1,14 +1,13 @@
 using MongoCustody.Core.Abstractions;
-using MongoCustody.Core.Engines;
 
 namespace MongoCustody.Connectors.Secrets;
 
 /// <summary>
 /// Resolves secrets from process environment variables.
-/// Secret names are transformed to environment variable names by replacing
-/// hyphens with underscores and converting to uppercase.
-/// Example: <c>mongocustody-mongo-connection-string</c>
-///       →  <c>MONGOCUSTODY_MONGO_CONNECTION_STRING</c>
+/// The secret key is used as-is as the environment variable name, so keys
+/// configured in <see cref="MongoCustody.Core.Models.SecretsConfiguration"/>
+/// should follow the <c>UPPER_SNAKE_CASE</c> convention used by environment
+/// variables (e.g. <c>MONGOCUSTODY_MONGO_CONNECTION_STRING</c>).
 ///
 /// Suitable for local development, CI pipelines, and any host where
 /// secrets are injected as environment variables.
@@ -22,14 +21,7 @@ public sealed class EnvironmentSecretProvider : ISecretProvider
         string secretName,
         CancellationToken ct = default)
     {
-        var envVarName = ToEnvVarName(secretName);
-        var value = Environment.GetEnvironmentVariable(envVarName);
+        var value = Environment.GetEnvironmentVariable(secretName);
         return Task.FromResult(value);
     }
-
-    /// <summary>
-    /// Converts a Key Vault-style secret name to an environment variable name.
-    /// </summary>
-    internal static string ToEnvVarName(string secretName)
-        => secretName.Replace('-', '_').ToUpperInvariant();
 }

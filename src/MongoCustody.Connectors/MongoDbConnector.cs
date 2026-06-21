@@ -15,7 +15,7 @@ namespace MongoCustody.Connectors;
 /// Azure Cosmos DB for MongoDB (RU-based API).
 ///
 /// The connection string is resolved lazily from the secret provider
-/// using the key <c>{GlobalConst.KEYNAME_MONGODB_CONNSTRING}</c>.
+/// using the key defined in <see cref="MongoCustody.Core.Models.SecretsConfiguration.MongoConnectionStringKey"/>.
 /// If the secret is absent, <see cref="MongoCustodyConfiguration.MongoDBAccountEndpoint"/>
 /// is used as the connection string (useful for Cosmos DB managed identity
 /// endpoints that embed no credentials).
@@ -106,9 +106,10 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var collection = await GetCollectionAsync(databaseName, collectionName, ct)
             .ConfigureAwait(false);
 
+        var dbCfg = GetDatabaseConfig(databaseName);
         long queryFromTs = fromTimestamp - bufferSeconds;
-        var filter = Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, queryFromTs);
-        var sort = Builders<BsonDocument>.Sort.Ascending(MongoCustodyConfiguration.AttributeName_ts).Ascending("_id");
+        var filter = Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, queryFromTs);
+        var sort = Builders<BsonDocument>.Sort.Ascending(dbCfg.TimestampAttribute).Ascending("_id");
         var options = new FindOptions<BsonDocument>
         {
             Sort = sort,
@@ -157,17 +158,15 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         // Counts live documents modified after anchorTs — used for Level 3
         // (Incremental Completeness) validation: how many documents changed
         // since the last anchor and still exist (i.e. were not soft-deleted).
-        //
-        //   _ts > anchorTs          — modified after the anchor
-        //   isDeleted absent/false  — document is still live
+        var dbCfg = GetDatabaseConfig(databaseName);
         var notDeleted = Builders<BsonDocument>.Filter.Or(
             Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists(MongoCustodyConfiguration.AttributeName_Deleted)),
-            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, false)
+                Builders<BsonDocument>.Filter.Exists(dbCfg.DeletedAttribute)),
+            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, false)
         );
 
         var filter = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, anchorTs),
+            Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, anchorTs),
             notDeleted);
 
         return await collection
@@ -189,18 +188,16 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         // (Count Consistency) validation: documents never soft-deleted, OR
         // documents soft-deleted AFTER the backup's anchor timestamp (they
         // were still present in the collection when the snapshot was taken).
-        //
-        //   (isDeleted absent OR isDeleted=false)
-        //   OR (isDeleted=true AND _ts > anchorTs)
+        var dbCfg = GetDatabaseConfig(databaseName);
         var notDeleted = Builders<BsonDocument>.Filter.Or(
             Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists(MongoCustodyConfiguration.AttributeName_Deleted)),
-            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, false)
+                Builders<BsonDocument>.Filter.Exists(dbCfg.DeletedAttribute)),
+            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, false)
         );
 
         var deletedAfterAnchor = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Eq(MongoCustodyConfiguration.AttributeName_Deleted, true),
-            Builders<BsonDocument>.Filter.Gt(MongoCustodyConfiguration.AttributeName_ts, anchorTs)
+            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, true),
+            Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, anchorTs)
         );
 
         var filter = Builders<BsonDocument>.Filter.Or(notDeleted, deletedAfterAnchor);
@@ -252,11 +249,13 @@ public sealed class MongoDbConnector : IBackupSourceConnector
             if (_client is not null) return _client;
 
             var connectionString = await _secretProvider
-                .GetSecretAsync(GlobalConst.KEYNAME_MONGODB_CONNSTRING, ct)
+                .GetSecretAsync(_config.Secrets.MongoConnectionStringKey, ct)
                 .ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(connectionString))
-                connectionString = _config.MongoDBAccountEndpoint;
+                connectionString = await _secretProvider
+                    .GetSecretAsync(_config.Secrets.MongoAccountEndpointKey, ct)
+                    .ConfigureAwait(false);
 
             _client = new MongoClient(connectionString);
             return _client;
@@ -284,11 +283,14 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         return db.GetCollection<BsonDocument>(collectionName);
     }
 
+    private DatabaseConfiguration GetDatabaseConfig(string databaseName) =>
+        _config.Databases.FirstOrDefault(d => d.DatabaseName == databaseName)
+        ?? new DatabaseConfiguration { DatabaseName = databaseName };
+
     private HashSet<string> GetExcludedCollections(string databaseName)
     {
-        var dbConfig = _config.Databases
-            .FirstOrDefault(d => d.DatabaseName == databaseName);
-        return dbConfig?.ExcludedCollections is { Count: > 0 }
+        var dbConfig = GetDatabaseConfig(databaseName);
+        return dbConfig.ExcludedCollections is { Count: > 0 }
             ? new HashSet<string>(dbConfig.ExcludedCollections,
                 StringComparer.OrdinalIgnoreCase)
             : [];

@@ -39,9 +39,9 @@ public sealed class BlobStorageConnector : IStorageConnector
 
     /// <param name="configuration">Root MongoCustody configuration.</param>
     /// <param name="secretProvider">
-    /// Used to resolve the optional storage connection string secret
-    /// (<c>{GlobalConst.KEYNAME_AZBLOB_CONNSTRING}</c>). When the secret
-    /// is absent the connector uses the endpoint URL with
+    /// Used to resolve the optional storage connection string using the key
+    /// defined in <see cref="SecretsConfiguration.StorageConnectionStringKey"/>.
+    /// When the secret is absent the connector uses the endpoint URL with
     /// <see cref="DefaultAzureCredential"/>.
     /// </param>
     public BlobStorageConnector(
@@ -214,7 +214,7 @@ public sealed class BlobStorageConnector : IStorageConnector
             if (_container is not null) return _container;
 
             var connectionString = await _secretProvider
-                .GetSecretAsync(GlobalConst.KEYNAME_AZBLOB_CONNSTRING, ct)
+                .GetSecretAsync(_config.Secrets.StorageConnectionStringKey, ct)
                 .ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(connectionString))
@@ -232,9 +232,18 @@ public sealed class BlobStorageConnector : IStorageConnector
                 //   3. Managed Identity (Azure Functions, Container Apps, App Service)
                 //   4. Azure CLI / azd (local dev)
                 // All four work correctly on Linux.
-                var serviceUri = new Uri(_config.StorageAccountEndpoint);
+                var endpoint = await _secretProvider
+                    .GetSecretAsync(_config.Secrets.StorageAccountEndpointKey, ct)
+                    .ConfigureAwait(false);
+
+                if (string.IsNullOrWhiteSpace(endpoint))
+                    throw new InvalidOperationException(
+                        $"No Blob Storage connection string or endpoint configured. " +
+                        $"Set '{_config.Secrets.StorageConnectionStringKey}' or " +
+                        $"'{_config.Secrets.StorageAccountEndpointKey}'.");
+
                 var serviceClient = new BlobServiceClient(
-                    serviceUri,
+                    new Uri(endpoint),
                     new DefaultAzureCredential());
                 _container = serviceClient.GetBlobContainerClient(
                     _config.StorageContainerName);

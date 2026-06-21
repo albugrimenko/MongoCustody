@@ -3,6 +3,7 @@ using MongoCustody.Connectors;
 using MongoCustody.Connectors.Secrets;
 using MongoCustody.Core;
 using MongoCustody.Core.Abstractions;
+using MongoCustody.Core.Models;
 
 namespace MongoCustody.Cli;
 
@@ -19,11 +20,12 @@ internal static class ServiceFactory
     };
 
     /// <summary>
-    /// Loads <paramref name="configPath"/>, resolves secrets from environment
-    /// variables, and constructs <see cref="MongoCustodyService"/>.
+    /// Loads <paramref name="configPath"/>, resolves secrets, and constructs
+    /// <see cref="MongoCustodyService"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when the config file is missing or malformed.
+    /// Thrown when the config file is missing or malformed, or when the Key
+    /// Vault URI environment variable is not set for the AzureKeyVault provider.
     /// </exception>
     internal static IMongoCustodyService Build(string configPath)
     {
@@ -44,13 +46,29 @@ internal static class ServiceFactory
                 $"Config file is not valid JSON: {ex.Message}", ex);
         }
 
-        var config          = cli.ToCore();
-        var secretProvider  = new EnvironmentSecretProvider();
-        var source          = new MongoDbConnector(config, secretProvider);
-        var storage         = new BlobStorageConnector(config, secretProvider);
-        var metadata        = new BlobMetadataRepository(storage);
-        var restoreFactory  = new MongoDbRestoreTargetConnectorFactory();
+        var config         = cli.ToCore();
+        var secretProvider = BuildSecretProvider(config.Secrets);
+        var source         = new MongoDbConnector(config, secretProvider);
+        var storage        = new BlobStorageConnector(config, secretProvider);
+        var metadata       = new BlobMetadataRepository(storage);
+        var restoreFactory = new MongoDbRestoreTargetConnectorFactory();
 
         return new MongoCustodyService(source, storage, metadata, config, restoreFactory);
+    }
+
+    private static ISecretProvider BuildSecretProvider(SecretsConfiguration secrets)
+    {
+        if (secrets.Provider == SecretProviderType.AzureKeyVault)
+        {
+            var vaultUri = Environment.GetEnvironmentVariable(secrets.KeyVaultUriKey);
+            if (string.IsNullOrWhiteSpace(vaultUri))
+                throw new InvalidOperationException(
+                    $"Azure Key Vault provider is configured but the Key Vault URI " +
+                    $"environment variable '{secrets.KeyVaultUriKey}' is not set.");
+
+            return new AzureKeyVaultSecretProvider(vaultUri);
+        }
+
+        return new EnvironmentSecretProvider();
     }
 }

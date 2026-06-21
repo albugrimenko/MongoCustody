@@ -3,7 +3,9 @@
   "databases": [
     {
       "databaseName": "TEST",
-      "excludedCollections": []
+      "excludedCollections": [],
+      "timestampAttribute": "_ts",
+      "deletedAttribute": "isDeleted"
     }
   ],
   "policy": {
@@ -15,6 +17,11 @@
     "chunkSizeGb": 10
   },
   "secrets": {
-    "provider": "EnvironmentVariables"
+    "provider": "EnvironmentVariables",
+    "keyVaultUriKey": "MONGOCUSTODY_KEYVAULT_URI",
+    "mongoConnectionStringKey": "MONGOCUSTODY_MONGO_CONNECTION_STRING",
+    "mongoAccountEndpointKey": "MONGOCUSTODY_MONGO_ENDPOINT",
+    "storageConnectionStringKey": "MONGOCUSTODY_STORAGE_CONNECTION_STRING",
+    "storageAccountEndpointKey": "MONGOCUSTODY_STORAGE_ENDPOINT"
   }
 }

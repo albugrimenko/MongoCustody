@@ -5,17 +5,11 @@ namespace MongoCustody.Cli;
 
 /// <summary>
 /// JSON shape of <c>mongocustody.json</c> as documented in the README.
-/// Connection strings are never stored here — they come from environment
-/// variables resolved by <see cref="MongoCustody.Connectors.Secrets.EnvironmentSecretProvider"/>.
+/// No URIs or connection strings are stored here — all environment-specific
+/// values are resolved at runtime via the configured secret provider.
 /// </summary>
 internal sealed class CliConfiguration
 {
-    [JsonPropertyName("mongoDBAccountEndpoint")]
-    public string MongoDBAccountEndpoint { get; set; } = string.Empty;
-
-    [JsonPropertyName("storageAccountEndpoint")]
-    public string StorageAccountEndpoint { get; set; } = string.Empty;
-
     [JsonPropertyName("storageContainerName")]
     public string StorageContainerName { get; set; } = "backups";
 
@@ -25,13 +19,15 @@ internal sealed class CliConfiguration
     [JsonPropertyName("policy")]
     public BackupPolicy Policy { get; set; } = new();
 
+    [JsonPropertyName("secrets")]
+    public SecretsConfiguration Secrets { get; set; } = new();
+
     /// <summary>Converts to the Core configuration type.</summary>
     internal MongoCustodyConfiguration ToCore() => new()
     {
-        MongoDBAccountEndpoint = MongoDBAccountEndpoint,
-        StorageAccountEndpoint = StorageAccountEndpoint,
-        StorageContainerName   = StorageContainerName,
-        Databases              = Databases,
-        Policy                 = Policy
+        StorageContainerName = StorageContainerName,
+        Databases            = Databases,
+        Policy               = Policy,
+        Secrets              = Secrets
     };
 }
