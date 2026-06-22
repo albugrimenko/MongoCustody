@@ -76,20 +76,22 @@ internal static class BackupsCommand
                     totalCount = records.Count,
                     backups    = records.Select(r => new
                     {
-                        backupId       = r.BackupId,
-                        database       = r.DatabaseName,
-                        completedAt    = r.CompletedAtUtc,
-                        folder         = r.BackupFolder,
-                        quarter        = r.QuarterLabel,
-                        totalDocuments = r.Collections.Sum(c => c.TotalDocuments),
-                        totalChunks    = r.Collections.Sum(c => c.ChunkCount),
+                        backupId        = r.BackupId,
+                        database        = r.DatabaseName,
+                        completedAt     = r.CompletedAtUtc,
+                        folder          = r.BackupFolder,
+                        quarter         = r.QuarterLabel,
+                        totalDocuments  = r.Collections.Sum(c => c.TotalDocuments),
+                        totalChunks     = r.Collections.Sum(c => c.ChunkCount),
                         collectionCount = r.Collections.Count,
-                        collections    = detail
+                        compressedBytes = r.Collections.Sum(c => c.Chunks.Sum(k => k.SizeBytes)),
+                        collections     = detail
                             ? r.Collections.Select(c => new
                             {
-                                name      = c.CollectionName,
-                                documents = c.TotalDocuments,
-                                chunks    = c.ChunkCount
+                                name            = c.CollectionName,
+                                documents       = c.TotalDocuments,
+                                chunks          = c.ChunkCount,
+                                compressedBytes = c.Chunks.Sum(k => k.SizeBytes)
                             })
                             : null
                     })
@@ -111,6 +113,7 @@ internal static class BackupsCommand
                     {
                         var totalDocs   = r.Collections.Sum(c => c.TotalDocuments);
                         var totalChunks = r.Collections.Sum(c => c.ChunkCount);
+                        var totalBytes  = r.Collections.Sum(c => c.Chunks.Sum(k => k.SizeBytes));
 
                         Console.WriteLine($"  {r.BackupId}");
                         Console.WriteLine($"    Database  : {r.DatabaseName}");
@@ -119,21 +122,30 @@ internal static class BackupsCommand
                         Console.WriteLine($"    Folder    : {r.BackupFolder}");
                         Console.WriteLine(
                             $"    Summary   : {r.Collections.Count} collection(s)  " +
-                            $"{totalDocs:N0} docs  {totalChunks} chunk(s)");
+                            $"{totalDocs:N0} docs  {totalChunks} chunk(s)  " +
+                            $"{FormatSize(totalBytes)} compressed");
 
                         if (detail)
                         {
                             foreach (var c in r.Collections)
+                            {
+                                var colBytes = c.Chunks.Sum(k => k.SizeBytes);
                                 Console.WriteLine(
-                                    $"      • {c.CollectionName,-30} {c.TotalDocuments,10:N0} docs  {c.ChunkCount} chunk(s)");
+                                    $"      • {c.CollectionName,-30} {c.TotalDocuments,10:N0} docs  " +
+                                    $"{c.ChunkCount} chunk(s)  {FormatSize(colBytes)} compressed");
+                            }
                         }
 
                         Console.WriteLine();
                     }
                 }
 
+                var grandTotalBytes = records.Sum(r =>
+                    r.Collections.Sum(c => c.Chunks.Sum(k => k.SizeBytes)));
+
                 Output.WriteSeparator();
-                Console.WriteLine($"Total: {records.Count} backup(s)");
+                Console.WriteLine(
+                    $"Total: {records.Count} backup(s)  {FormatSize(grandTotalBytes)} compressed");
                 if (!detail && records.Count > 0)
                     Console.WriteLine("  Tip: add --detail to see per-collection breakdown.");
             }
@@ -143,4 +155,12 @@ internal static class BackupsCommand
 
         return cmd;
     }
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        >= 1_073_741_824 => $"{bytes / 1_073_741_824.0:F2} GB",
+        >= 1_048_576     => $"{bytes / 1_048_576.0:F1} MB",
+        >= 1_024         => $"{bytes / 1_024.0:F0} KB",
+        _                => $"{bytes} B"
+    };
 }
