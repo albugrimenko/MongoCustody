@@ -75,6 +75,16 @@ internal static class ServiceFactory
         return new MongoCustodyService(source, storage, metadata, config, restoreFactory);
     }
 
+    internal static async Task<string?> ResolveSecretAsync(
+        string configPath,
+        string key,
+        CancellationToken ct = default)
+    {
+        var config = LoadConfig(configPath);
+        var provider = BuildSecretProvider(config.Secrets);
+        return await provider.GetSecretAsync(key, ct).ConfigureAwait(false);
+    }
+
     private static ISecretProvider BuildSecretProvider(SecretsConfiguration secrets)
     {
         if (secrets.Provider == SecretProviderType.AzureKeyVault)

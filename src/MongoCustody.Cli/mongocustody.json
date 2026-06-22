@@ -25,7 +25,7 @@
     "storageAccountEndpointKey": "MONGOCUSTODY_STORAGE_ENDPOINT"
   },
   "dryRun": {
-    "connectionString": "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING",
+    "connectionStringKey": "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING",
     "databaseName": "mongocustody-dry-run"
   }
 }

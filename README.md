@@ -603,13 +603,13 @@ If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an
 ```json
 {
   "dryRun": {
-    "connectionString": "MONGO_DRY_RUN_CONN",
+    "connectionStringKey": "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING",
     "databaseName": "mongocustody-dry-run"
   }
 }
 ```
 
-`connectionString` is resolved via the configured secret provider (same as all other connection strings), so the literal value is typically a Key Vault secret name or environment variable name rather than a raw connection string.
+`connectionStringKey` follows the same convention as `mongoConnectionStringKey` and `storageConnectionStringKey` — it is the environment variable name (or Key Vault secret name) that holds the actual connection string, never the connection string itself.
 
 > **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`.
 

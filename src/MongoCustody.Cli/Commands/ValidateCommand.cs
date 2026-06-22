@@ -286,9 +286,11 @@ internal static class ValidateCommand
             }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
-            // Resolve target connection and database — CLI args take precedence over config.
-            targetConn ??= config.DryRun?.ConnectionString;
-            targetDb   ??= config.DryRun?.DatabaseName;
+            // Resolve target connection string — CLI arg takes precedence.
+            // Config supplies a key name that is resolved through the secret provider.
+            if (targetConn is null && config.DryRun?.ConnectionStringKey is { Length: > 0 } key)
+                targetConn = await ServiceFactory.ResolveSecretAsync(configPath, key, ct);
+            targetDb ??= config.DryRun?.DatabaseName;
 
             if (string.IsNullOrWhiteSpace(targetConn))
             {

@@ -46,8 +46,14 @@ public sealed class MongoCustodyConfiguration
 /// </summary>
 public sealed class DryRunConfiguration
 {
-    /// <summary>MongoDB connection string for the dry-run target instance.</summary>
-    public string ConnectionString { get; set; } = string.Empty;
+    /// <summary>
+    /// Key used to look up the dry-run target MongoDB connection string.
+    /// For EnvironmentVariables this is the env-var name; for AzureKeyVault
+    /// it is the secret name.
+    /// Default: <c>MONGOCUSTODY_DRY_RUN_CONNECTION_STRING</c>.
+    /// </summary>
+    public string ConnectionStringKey { get; set; } =
+        "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING";
 
     /// <summary>
     /// Name of the pre-provisioned empty database to restore into.
