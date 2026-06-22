@@ -31,4 +31,27 @@ public sealed class MongoCustodyConfiguration
     /// and storage keys at runtime.
     /// </summary>
     public SecretsConfiguration Secrets { get; set; } = new();
+
+    /// <summary>
+    /// Optional configuration for automated dry-run validation.
+    /// When present, <c>validate dry-run</c> uses these defaults and no
+    /// connection string is required on the command line.
+    /// </summary>
+    public DryRunConfiguration? DryRun { get; set; }
+}
+
+/// <summary>
+/// Shared target database for automated restore dry-run validation.
+/// A single empty database is reused sequentially across all source databases.
+/// </summary>
+public sealed class DryRunConfiguration
+{
+    /// <summary>MongoDB connection string for the dry-run target instance.</summary>
+    public string ConnectionString { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Name of the pre-provisioned empty database to restore into.
+    /// Must exist; must be empty at the start of each run.
+    /// </summary>
+    public string DatabaseName { get; set; } = string.Empty;
 }

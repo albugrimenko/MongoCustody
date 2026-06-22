@@ -39,6 +39,13 @@ public sealed class RestoreResult
     /// <see cref="RestoreRequest"/>.
     /// </summary>
     public string CorrelationId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Unique identifier of the <see cref="RestoreRecord"/> written to
+    /// storage. Used by dry-run cleanup to patch the audit record after
+    /// the restore engine returns.
+    /// </summary>
+    public string RestoreId { get; set; } = string.Empty;
 }
 
 /// <summary>

@@ -69,6 +69,12 @@ public sealed class AuditSummary
     [JsonPropertyName("restoresFailed")]
     public int RestoresFailed { get; init; }
 
+    [JsonPropertyName("dryRunsCompleted")]
+    public int DryRunsCompleted { get; init; }
+
+    [JsonPropertyName("dryRunsFailed")]
+    public int DryRunsFailed { get; init; }
+
     [JsonPropertyName("totalCollectionsBacked")]
     public int TotalCollectionsBacked { get; init; }
 

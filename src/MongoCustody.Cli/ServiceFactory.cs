@@ -27,6 +27,25 @@ internal static class ServiceFactory
     /// Thrown when the config file is missing or malformed, or when the Key
     /// Vault URI environment variable is not set for the AzureKeyVault provider.
     /// </exception>
+    internal static MongoCustodyConfiguration LoadConfig(string configPath)
+    {
+        if (!File.Exists(configPath))
+            throw new InvalidOperationException(
+                $"Config file not found: {Path.GetFullPath(configPath)}");
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            return (JsonSerializer.Deserialize<CliConfiguration>(json, JsonOptions)
+                    ?? throw new InvalidOperationException("Config file is empty or null."))
+                .ToCore();
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Config file is not valid JSON: {ex.Message}", ex);
+        }
+    }
+
     internal static IMongoCustodyService Build(string configPath)
     {
         if (!File.Exists(configPath))

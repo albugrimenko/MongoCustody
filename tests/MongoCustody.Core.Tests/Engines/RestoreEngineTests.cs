@@ -110,6 +110,10 @@ public sealed class RestoreEngineTests
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        mock.Setup(t => t.DropAllCollectionsAsync(
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         return mock;
     }
 

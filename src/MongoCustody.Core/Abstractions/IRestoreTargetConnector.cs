@@ -101,6 +101,13 @@ public interface IRestoreTargetConnector : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Drops all collections in <paramref name="databaseName"/>, returning
+    /// it to an empty state. Used at the end of a dry-run to remove restored
+    /// ePHI from the temporary target database.
+    /// </summary>
+    Task DropAllCollectionsAsync(string databaseName, CancellationToken ct = default);
+
+    /// <summary>
     /// Verifies that the connector can reach the restore target.
     /// Returns <c>true</c> if reachable, together with an optional error
     /// message on failure.

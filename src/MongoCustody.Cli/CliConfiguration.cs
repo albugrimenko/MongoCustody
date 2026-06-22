@@ -22,12 +22,15 @@ internal sealed class CliConfiguration
     [JsonPropertyName("secrets")]
     public SecretsConfiguration Secrets { get; set; } = new();
 
-    /// <summary>Converts to the Core configuration type.</summary>
+    [JsonPropertyName("dryRun")]
+    public DryRunConfiguration? DryRun { get; set; }
+
     internal MongoCustodyConfiguration ToCore() => new()
     {
         StorageContainerName = StorageContainerName,
         Databases            = Databases,
         Policy               = Policy,
-        Secrets              = Secrets
+        Secrets              = Secrets,
+        DryRun               = DryRun
     };
 }

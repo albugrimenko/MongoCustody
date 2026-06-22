@@ -111,6 +111,16 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Runs a full restore dry-run cycle: restore → verify counts → clean up.
+    /// The <see cref="Models.RestoreRecord"/> written to storage has
+    /// <c>IsDryRun = true</c> and is included in date-range audit reports.
+    /// </summary>
+    Task<RestoreResult> RunDryRunAsync(
+        RestoreRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Assembles an audit report for the specified date range or a single
     /// restore operation. The returned <see cref="Models.AuditReport"/> is a
     /// structured object — the caller is responsible for rendering and

@@ -564,6 +564,53 @@ Restore chain for 'source-database'
 
 If the best available point is more than 1 day before the requested date, a gap warning is shown. The command exits with code `0` when a chain is found, `1` when no eligible backup exists.
 
+#### Validate dry-run
+
+Runs the full automated dry-run validation cycle for a database: restore to a temporary target → verify document counts → drop all collections from the target → record results. The result is stored as a `RestoreRecord` with `IsDryRun = true` and appears automatically in date-range audit reports under **Dry-Run Validation Activity**.
+
+```bash
+# Dry-run with target specified on the command line
+mongocustody validate dry-run \
+  --config mongocustody.json \
+  --database source-database \
+  --date 2025-04-15T00:00:00Z \
+  --target-connection-string "mongodb://dry-run-instance..." \
+  --target-database dry-run-db
+
+# Dry-run using config-file defaults (dryRun.connectionString / dryRun.databaseName)
+mongocustody validate dry-run \
+  --config mongocustody.json \
+  --database source-database
+
+# Unattended / scheduled — skips confirmation prompt
+mongocustody validate dry-run \
+  --config mongocustody.json \
+  --database source-database \
+  --auto-confirm
+```
+
+The target database must be pre-provisioned and **empty** — the command aborts with a hard error if any collections are found. After the restore completes successfully, all collections are dropped to return the database to its empty state. The audit record includes:
+
+- `isDryRun: true`
+- `completedAtUtc` — when the restore finished (ePHI present from this point)
+- `cleanupStatus` — `Completed` or `Failed`
+- `cleanedUpAtUtc` — when all collections were dropped (ePHI no longer present)
+
+If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an auditor can see that ePHI remained in the target database and requires manual remediation.
+
+**Config file defaults** — add a `dryRun` section to avoid repeating the target on every run:
+
+```json
+{
+  "dryRun": {
+    "connectionString": "MONGO_DRY_RUN_CONN",
+    "databaseName": "mongocustody-dry-run"
+  }
+}
+```
+
+`connectionString` is resolved via the configured secret provider (same as all other connection strings), so the literal value is typically a Key Vault secret name or environment variable name rather than a raw connection string.
+
 > **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`.
 
 ---
@@ -682,7 +729,7 @@ MongoCustody provides four levels of validation, all of which read data without 
 | **Structural Integrity** | SHA-256 hash of each collection blob matches the hash stored in the `BackupRecord` at write time | After every backup automatically |
 | **Count Consistency** | Document count in the backup matches a soft-delete-aware count query against the live database as of the anchor timestamp | After every full backup automatically |
 | **Incremental Completeness** | Document count in the incremental is ≥ the count of documents modified in the live database since the previous anchor | After every incremental automatically |
-| **Restore Dry-Run** | Full restore to an ephemeral account; verifies counts and spot-checks 100 random documents without promoting to production | Quarterly, or on demand |
+| **Restore Dry-Run** | Full restore to a pre-provisioned empty database; verifies document counts; drops all collections after verification. Results recorded as `RestoreRecord` with `IsDryRun=true` and included in audit reports | Quarterly, or on demand via `validate dry-run` |
 
 Run validation at any time via the library or CLI:
 

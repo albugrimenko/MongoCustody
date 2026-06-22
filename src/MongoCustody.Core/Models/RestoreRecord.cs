@@ -91,4 +91,26 @@ public sealed class RestoreRecord
     /// </summary>
     [JsonPropertyName("correlationId")]
     public string CorrelationId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// <c>true</c> when this restore was part of an automated dry-run
+    /// validation cycle. The target database was cleaned up after the restore.
+    /// </summary>
+    [JsonPropertyName("isDryRun")]
+    public bool IsDryRun { get; set; }
+
+    /// <summary>
+    /// UTC time all collections were dropped from the dry-run target database.
+    /// <c>null</c> for real restores and for dry-runs that failed before cleanup.
+    /// </summary>
+    [JsonPropertyName("cleanedUpAtUtc")]
+    public DateTimeOffset? CleanedUpAtUtc { get; set; }
+
+    /// <summary>
+    /// Terminal status of the cleanup step. <c>null</c> for real restores.
+    /// <see cref="BackupStatus.Failed"/> means ePHI may still be present
+    /// in the dry-run database — requires manual intervention.
+    /// </summary>
+    [JsonPropertyName("cleanupStatus")]
+    public BackupStatus? CleanupStatus { get; set; }
 }

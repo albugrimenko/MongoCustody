@@ -47,11 +47,11 @@ internal sealed class AuditReportEngine
 
         var entry = await BuildRestoreEntryAsync(record, ct).ConfigureAwait(false);
 
-        var summary = new AuditSummary
-        {
-            RestoresCompleted = record.Status == BackupStatus.Completed ? 1 : 0,
-            RestoresFailed    = record.Status == BackupStatus.Failed    ? 1 : 0,
-        };
+        var completed = record.Status == BackupStatus.Completed ? 1 : 0;
+        var failed    = record.Status == BackupStatus.Failed    ? 1 : 0;
+        var summary   = record.IsDryRun
+            ? new AuditSummary { DryRunsCompleted = completed, DryRunsFailed = failed }
+            : new AuditSummary { RestoresCompleted = completed, RestoresFailed = failed };
 
         return new AuditReport
         {
@@ -155,8 +155,9 @@ internal sealed class AuditReportEngine
         IReadOnlyList<BackupRecord>  backups,
         IReadOnlyList<RestoreRecord> restores)
     {
-        // BackupRecord has no Status field — ListFullBackupsAsync only returns
-        // completed records, so all listed backups are implicitly completed.
+        var realRestores = restores.Where(r => !r.IsDryRun).ToList();
+        var dryRuns      = restores.Where(r =>  r.IsDryRun).ToList();
+
         var totalCollections = backups.Sum(b => b.Collections.Count);
         var totalDocs        = backups.Sum(b => b.Collections.Sum(c => (long)c.TotalDocuments));
 
@@ -164,8 +165,10 @@ internal sealed class AuditReportEngine
         {
             BackupsCompleted       = backups.Count,
             BackupsFailed          = 0,
-            RestoresCompleted      = restores.Count(r => r.Status == BackupStatus.Completed),
-            RestoresFailed         = restores.Count(r => r.Status == BackupStatus.Failed),
+            RestoresCompleted      = realRestores.Count(r => r.Status == BackupStatus.Completed),
+            RestoresFailed         = realRestores.Count(r => r.Status == BackupStatus.Failed),
+            DryRunsCompleted       = dryRuns.Count(r => r.Status == BackupStatus.Completed),
+            DryRunsFailed          = dryRuns.Count(r => r.Status == BackupStatus.Failed),
             TotalCollectionsBacked = totalCollections,
             TotalDocumentsBacked   = totalDocs,
         };

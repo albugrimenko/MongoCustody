@@ -71,6 +71,8 @@ internal static class MarkdownReportRenderer
 
         sb.AppendLine($"| Restore operations completed | {s.RestoresCompleted:N0} |");
         sb.AppendLine($"| Restore operations failed | {s.RestoresFailed:N0} |");
+        sb.AppendLine($"| Dry-run validations completed | {s.DryRunsCompleted:N0} |");
+        sb.AppendLine($"| Dry-run validations failed | {s.DryRunsFailed:N0} |");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -122,46 +124,89 @@ internal static class MarkdownReportRenderer
     {
         if (restores.Count == 0) return;
 
-        sb.AppendLine("## Restore Activity");
+        var realRestores = restores.Where(e => !e.Record.IsDryRun).ToList();
+        var dryRuns      = restores.Where(e =>  e.Record.IsDryRun).ToList();
+
+        if (realRestores.Count > 0)
+        {
+            sb.AppendLine("## Restore Activity");
+            sb.AppendLine();
+            foreach (var entry in realRestores)
+                AppendRestoreEntry(sb, entry);
+        }
+
+        if (dryRuns.Count > 0)
+        {
+            sb.AppendLine("## Dry-Run Validation Activity");
+            sb.AppendLine();
+            foreach (var entry in dryRuns)
+                AppendRestoreEntry(sb, entry);
+        }
+    }
+
+    private static void AppendRestoreEntry(StringBuilder sb, RestoreAuditEntry entry)
+    {
+        var r       = entry.Record;
+        var label   = r.IsDryRun ? "Dry Run" : "Restore";
+        var heading = $"{FmtLong(r.RequestedAtUtc)} — {r.DatabaseName} → {r.TargetDatabaseName} [{label}: {r.Status}]";
+        sb.AppendLine($"### {heading}");
         sb.AppendLine();
 
-        foreach (var entry in restores)
+        sb.AppendLine("| Field | Value |");
+        sb.AppendLine("|---|---|");
+        sb.AppendLine($"| Restore ID | `{r.RestoreId}` |");
+        sb.AppendLine($"| Type | {(r.IsDryRun ? "Dry-run validation" : "Production restore")} |");
+        sb.AppendLine($"| Source database | {EscapeMd(r.DatabaseName)} |");
+        sb.AppendLine($"| Target database | {EscapeMd(r.TargetDatabaseName)} |");
+        sb.AppendLine($"| Requested restore point | {FmtLong(r.TargetDate)} |");
+        sb.AppendLine($"| Restore status | {r.Status} |");
+        if (r.CompletedAtUtc.HasValue)
+            sb.AppendLine($"| Restore completed | {FmtLong(r.CompletedAtUtc.Value)} |");
+        if (r.IsDryRun)
         {
-            var r = entry.Record;
-            var heading =
-                $"{FmtLong(r.RequestedAtUtc)} — {r.DatabaseName} → {r.TargetDatabaseName} [{r.Status}]";
-            sb.AppendLine($"### {heading}");
-            sb.AppendLine();
-
-            sb.AppendLine("| Field | Value |");
-            sb.AppendLine("|---|---|");
-            sb.AppendLine($"| Restore ID | `{r.RestoreId}` |");
-            sb.AppendLine($"| Source database | {EscapeMd(r.DatabaseName)} |");
-            sb.AppendLine($"| Target database | {EscapeMd(r.TargetDatabaseName)} |");
-            sb.AppendLine($"| Requested restore point | {FmtLong(r.TargetDate)} |");
-            sb.AppendLine($"| Status | {r.Status} |");
-            if (r.CompletedAtUtc.HasValue)
-                sb.AppendLine($"| Completed | {FmtLong(r.CompletedAtUtc.Value)} |");
-            if (!string.IsNullOrEmpty(r.RequestedBy))
-                sb.AppendLine($"| Requested by | {EscapeMd(r.RequestedBy)} |");
-            if (!string.IsNullOrEmpty(r.ApprovedBy))
-                sb.AppendLine($"| Approved by | {EscapeMd(r.ApprovedBy)} |");
-            if (!string.IsNullOrEmpty(r.Reason))
-                sb.AppendLine($"| Reason | {EscapeMd(r.Reason)} |");
-            if (!string.IsNullOrEmpty(r.CorrelationId))
-                sb.AppendLine($"| Correlation ID | `{r.CorrelationId}` |");
-            if (!string.IsNullOrEmpty(r.FailureReason))
-                sb.AppendLine($"| Failure reason | {EscapeMd(r.FailureReason)} |");
-            sb.AppendLine();
-
-            if (entry.ChainSteps.Count > 0)
+            sb.AppendLine($"| Cleanup status | {r.CleanupStatus?.ToString() ?? "—"} |");
+            if (r.CleanedUpAtUtc.HasValue && r.CompletedAtUtc.HasValue)
             {
-                AppendChainNarrative(sb, r, entry.ChainSteps);
+                var exposureWindow = r.CleanedUpAtUtc.Value - r.CompletedAtUtc.Value;
+                sb.AppendLine(
+                    $"| Dry-run DB cleaned up | {FmtLong(r.CleanedUpAtUtc.Value)} " +
+                    $"({FormatDuration(exposureWindow)} after restore) |");
             }
-
-            sb.AppendLine("---");
-            sb.AppendLine();
+            else if (r.CleanedUpAtUtc.HasValue)
+            {
+                sb.AppendLine($"| Dry-run DB cleaned up | {FmtLong(r.CleanedUpAtUtc.Value)} |");
+            }
+            else
+            {
+                sb.AppendLine("| Dry-run DB cleaned up | ⚠ Not cleaned up |");
+            }
         }
+        if (!string.IsNullOrEmpty(r.RequestedBy))
+            sb.AppendLine($"| Requested by | {EscapeMd(r.RequestedBy)} |");
+        if (!string.IsNullOrEmpty(r.ApprovedBy))
+            sb.AppendLine($"| Approved by | {EscapeMd(r.ApprovedBy)} |");
+        if (!string.IsNullOrEmpty(r.Reason))
+            sb.AppendLine($"| Reason | {EscapeMd(r.Reason)} |");
+        if (!string.IsNullOrEmpty(r.CorrelationId))
+            sb.AppendLine($"| Correlation ID | `{r.CorrelationId}` |");
+        if (!string.IsNullOrEmpty(r.FailureReason))
+            sb.AppendLine($"| Failure reason | {EscapeMd(r.FailureReason)} |");
+        sb.AppendLine();
+
+        if (entry.ChainSteps.Count > 0)
+            AppendChainNarrative(sb, r, entry.ChainSteps);
+
+        sb.AppendLine("---");
+        sb.AppendLine();
+    }
+
+    private static string FormatDuration(TimeSpan ts)
+    {
+        if (ts.TotalSeconds < 60)
+            return $"{(int)ts.TotalSeconds}s";
+        if (ts.TotalMinutes < 60)
+            return $"{(int)ts.TotalMinutes}m {ts.Seconds}s";
+        return $"{(int)ts.TotalHours}h {ts.Minutes}m";
     }
 
     private static void AppendChainNarrative(

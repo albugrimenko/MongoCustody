@@ -210,6 +210,22 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
     }
 
     /// <inheritdoc />
+    public async Task DropAllCollectionsAsync(
+        string databaseName,
+        CancellationToken ct = default)
+    {
+        var db = _client.GetDatabase(databaseName);
+        using var cursor = await db
+            .ListCollectionNamesAsync(cancellationToken: ct)
+            .ConfigureAwait(false);
+        var names = await cursor.ToListAsync(ct).ConfigureAwait(false);
+
+        var drops = names.Select(name =>
+            db.DropCollectionAsync(name, ct));
+        await Task.WhenAll(drops).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public async Task<(bool IsHealthy, string? ErrorMessage)> CheckHealthAsync(
         CancellationToken ct = default)
     {

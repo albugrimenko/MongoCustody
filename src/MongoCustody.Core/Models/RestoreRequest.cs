@@ -65,4 +65,11 @@ public sealed class RestoreRequest
     /// automatically if not provided.
     /// </summary>
     public string? CorrelationId { get; set; }
+
+    /// <summary>
+    /// When <c>true</c>, the restore is treated as a dry-run validation cycle.
+    /// The <see cref="RestoreRecord"/> is flagged with <c>IsDryRun = true</c>
+    /// and the target database is cleaned up after the restore completes.
+    /// </summary>
+    public bool IsDryRun { get; set; }
 }

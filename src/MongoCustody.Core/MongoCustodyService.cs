@@ -224,7 +224,8 @@ public sealed class MongoCustodyService : IMongoCustodyService
             RequestedBy        = request.RequestedBy,
             ApprovedBy         = request.ApprovedBy,
             Reason             = request.Reason,
-            CorrelationId      = correlationId
+            CorrelationId      = correlationId,
+            IsDryRun           = request.IsDryRun
         };
 
         try
@@ -297,15 +298,82 @@ public sealed class MongoCustodyService : IMongoCustodyService
         return await FinaliseAuditAndReturnAsync(restoreRecord, result, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<RestoreResult> RunDryRunAsync(
+        RestoreRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        // Flag so RestoreAsync stamps IsDryRun on the RestoreRecord.
+        request.IsDryRun = true;
+        var result = await RestoreAsync(request, progress, ct).ConfigureAwait(false);
+
+        // Cleanup runs even if the restore failed, so the dry-run database is
+        // always returned to an empty state. Cleanup failure is recorded on the
+        // RestoreRecord and surfaced in the result but does NOT override a
+        // successful restore status — the auditor sees both outcomes.
+        if (_restoreTargetFactory is not null &&
+            !string.IsNullOrWhiteSpace(request.TargetConnectionString) &&
+            !string.IsNullOrWhiteSpace(request.TargetDatabaseName))
+        {
+            await using var target = _restoreTargetFactory.Create(request.TargetConnectionString);
+            var cleanupStatus = BackupStatus.Completed;
+            DateTimeOffset? cleanedUpAt = null;
+            string? cleanupFailure = null;
+
+            try
+            {
+                await target
+                    .DropAllCollectionsAsync(request.TargetDatabaseName, CancellationToken.None)
+                    .ConfigureAwait(false);
+                cleanedUpAt   = DateTimeOffset.UtcNow;
+                cleanupStatus = BackupStatus.Completed;
+            }
+            catch (Exception ex)
+            {
+                cleanupStatus  = BackupStatus.Failed;
+                cleanupFailure = $"Dry-run cleanup failed — ePHI may remain in " +
+                                 $"'{request.TargetDatabaseName}': {ex.Message}";
+            }
+
+            // Retrieve the record written by RestoreAsync and patch cleanup fields.
+            var record = await _metadata
+                .GetRestoreRecordAsync(result.RestoreId, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (record is not null)
+            {
+                record.CleanedUpAtUtc = cleanedUpAt;
+                record.CleanupStatus  = cleanupStatus;
+                if (cleanupFailure is not null)
+                    record.FailureReason = string.IsNullOrEmpty(record.FailureReason)
+                        ? cleanupFailure
+                        : $"{record.FailureReason}; {cleanupFailure}";
+
+                await _metadata
+                    .UpdateRestoreRecordAsync(record, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            if (cleanupFailure is not null)
+                result.FailureReason = string.IsNullOrEmpty(result.FailureReason)
+                    ? cleanupFailure
+                    : $"{result.FailureReason}; {cleanupFailure}";
+        }
+
+        return result;
+    }
+
     private async Task<RestoreResult> FinaliseAuditAndReturnAsync(
         RestoreRecord     record,
         RestoreResult     result,
         CancellationToken ct)
     {
-        record.Status        = result.Status;
+        record.Status         = result.Status;
         record.CompletedAtUtc = result.CompletedAtUtc;
         record.FailureReason  = result.FailureReason;
         record.RestoreChain   = result.RestoreChain;
+        result.RestoreId      = record.RestoreId;
 
         try
         {
