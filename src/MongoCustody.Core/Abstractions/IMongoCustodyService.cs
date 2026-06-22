@@ -101,6 +101,16 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Resolves the restore chain and returns a preview with the best
+    /// available date and a gap warning when it exceeds 1 day.
+    /// Read-only — no data is written.
+    /// </summary>
+    Task<Models.RestoreChainPreview> PreviewRestoreChainAsync(
+        string databaseName,
+        DateTimeOffset targetDate,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Assembles an audit report for the specified date range or a single
     /// restore operation. The returned <see cref="Models.AuditReport"/> is a
     /// structured object — the caller is responsible for rendering and

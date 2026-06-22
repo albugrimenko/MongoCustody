@@ -56,6 +56,14 @@ internal static class RestoreCommand
             AllowMultipleArgumentsPerToken = true
         };
 
+        var autoConfirmOpt = new Option<bool>("--auto-confirm", ["-y"])
+        {
+            Description =
+                "Skip the chain preview confirmation prompt. " +
+                "Required for unattended / batch use. " +
+                "Always aborts if no eligible backup exists."
+        };
+
         var cmd = new Command("restore",
             "Restore a database to a point in time by applying the resolved backup chain.");
         cmd.Add(configOpt);
@@ -67,29 +75,87 @@ internal static class RestoreCommand
         cmd.Add(approvedByOpt);
         cmd.Add(reasonOpt);
         cmd.Add(collectionsOpt);
+        cmd.Add(autoConfirmOpt);
         cmd.Add(outputOpt);
 
         cmd.SetAction(async (parseResult, ct) =>
         {
-            var configPath      = parseResult.GetValue(configOpt)!;
-            var database        = parseResult.GetValue(databaseOpt)!;
-            var targetDate      = parseResult.GetValue(targetDateOpt);
-            var targetConn      = parseResult.GetValue(targetConnOpt)!;
-            var targetDatabase  = parseResult.GetValue(targetDatabaseOpt)!;
-            var requestedBy     = parseResult.GetValue(requestedByOpt)!;
-            var approvedBy  = parseResult.GetValue(approvedByOpt)!;
-            var reason      = parseResult.GetValue(reasonOpt)!;
-            var collections = parseResult.GetValue(collectionsOpt) ?? [];
-            var format      = parseResult.GetValue(outputOpt);
+            var configPath     = parseResult.GetValue(configOpt)!;
+            var database       = parseResult.GetValue(databaseOpt)!;
+            var targetDate     = parseResult.GetValue(targetDateOpt);
+            var targetConn     = parseResult.GetValue(targetConnOpt)!;
+            var targetDatabase = parseResult.GetValue(targetDatabaseOpt)!;
+            var requestedBy    = parseResult.GetValue(requestedByOpt)!;
+            var approvedBy     = parseResult.GetValue(approvedByOpt)!;
+            var reason         = parseResult.GetValue(reasonOpt)!;
+            var collections    = parseResult.GetValue(collectionsOpt) ?? [];
+            var autoConfirm    = parseResult.GetValue(autoConfirmOpt);
+            var format         = parseResult.GetValue(outputOpt);
 
             IMongoCustodyService svc;
             try { svc = ServiceFactory.Build(configPath); }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
-            Console.Error.WriteLine(
-                $"Starting restore of '{database}' → '{targetDatabase}' as of {targetDate:u}…");
+            // --- Preview the chain before writing anything ---
+            RestoreChainPreview preview;
+            try
+            {
+                preview = await svc.PreviewRestoreChainAsync(database, targetDate, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+                return 1;
+            }
 
-            IProgress<MongoCustody.Core.Models.OperationProgress>? progress = null;
+            if (preview.Chain.Count == 0)
+            {
+                Console.Error.WriteLine($"Error: {preview.GapWarning}");
+                return 1;
+            }
+
+            // Print the resolved chain so the operator knows exactly what will be applied.
+            PrintChainPreview(preview, format);
+
+            // Warn and require confirmation when the gap exceeds 1 day.
+            if (preview.GapWarning is not null)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"WARNING: {preview.GapWarning}");
+                Console.WriteLine();
+
+                if (!autoConfirm)
+                {
+                    Console.Write("Proceed with restore? [y/N] ");
+                    var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+                    if (answer is not "y" and not "yes")
+                    {
+                        Console.WriteLine("Restore cancelled.");
+                        return 0;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("--auto-confirm set; proceeding despite gap.");
+                }
+            }
+            else if (!autoConfirm)
+            {
+                Console.Write("Proceed with restore? [y/N] ");
+                var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+                if (answer is not "y" and not "yes")
+                {
+                    Console.WriteLine("Restore cancelled.");
+                    return 0;
+                }
+            }
+
+            // --- Execute the restore ---
+            Console.Error.WriteLine(
+                $"Starting restore of '{database}' → '{targetDatabase}' " +
+                $"as of {preview.BestAvailableDate:u}…");
+
+            IProgress<OperationProgress>? progress = null;
             using var consoleProgress = format == OutputFormat.Text
                 ? new ConsoleProgress($"Restoring '{database}' → '{targetDatabase}'")
                 : null;
@@ -148,7 +214,7 @@ internal static class RestoreCommand
                     {
                         var icon = c.Status == BackupStatus.Completed ? "✓" : "✗";
                         Console.WriteLine(
-                            $"    {icon}  {c.CollectionName,-30} {c.DocumentsUpserted,10:N0} docs upserted");
+                            $"    {icon}  {c.CollectionName,-30} {c.DocumentsUpserted,10:N0} docs");
                         if (c.FailureReason is not null)
                             Console.WriteLine($"         {c.FailureReason}");
                     }
@@ -160,5 +226,26 @@ internal static class RestoreCommand
         });
 
         return cmd;
+    }
+
+    internal static void PrintChainPreview(RestoreChainPreview preview, OutputFormat format)
+    {
+        if (format == OutputFormat.Json) return; // JSON output handled by caller if needed
+
+        Output.WriteSeparator();
+        Console.WriteLine($"Restore chain for '{preview.DatabaseName}'");
+        Console.WriteLine($"  Requested : {preview.RequestedDate:u}");
+        Console.WriteLine($"  Best point: {preview.BestAvailableDate:u}");
+        Console.WriteLine();
+        Console.WriteLine($"  {"#",-3}  {"Type",-12}  {"Completed",-22}  Folder");
+        Console.WriteLine($"  {"---",-3}  {"------------",-12}  {"----------------------",-22}  ------");
+
+        for (int i = 0; i < preview.Chain.Count; i++)
+        {
+            var r = preview.Chain[i];
+            Console.WriteLine(
+                $"  {i + 1,-3}  {r.BackupType,-12}  {r.CompletedAtUtc:u,-22}  {r.BackupFolder}");
+        }
+        Output.WriteSeparator();
     }
 }

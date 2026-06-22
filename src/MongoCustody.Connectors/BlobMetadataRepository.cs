@@ -216,21 +216,22 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         DateTimeOffset targetDate,
         CancellationToken ct = default)
     {
-        // 1. Find the full backup that anchors the quarter containing targetDate
-        var quarterLabel = StoragePathHelper.QuarterLabel(targetDate);
-        var fullBackup = await GetFullBackupForQuarterAsync(
-            databaseName, quarterLabel, ct).ConfigureAwait(false)
+        // Walk quarters backwards from targetDate until we find a full backup
+        // whose CompletedAtUtc is on or before targetDate. The quarter boundary
+        // is a storage detail — the best anchor may be in a prior quarter.
+        var fullBackup = await FindLatestEligibleFullBackupAsync(
+            databaseName, targetDate, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 $"No full backup found for database '{databaseName}' " +
-                $"in quarter {quarterLabel}. Cannot resolve restore chain.");
+                $"on or before {targetDate:yyyy-MM-dd}. Cannot restore.");
 
-        var chain = new List<BackupRecord> { fullBackup };
+        var targetTs   = targetDate.ToUnixTimeSeconds();
         var fullFolder = fullBackup.BackupFolder;
+        var chain      = new List<BackupRecord> { fullBackup };
 
-        // 2. Walk checkpoints: include all checkpoints whose anchorTs <= targetDate unix
-        var targetTs = targetDate.ToUnixTimeSeconds();
+        // Walk checkpoints from the full backup's quarter.
         var checkpointPrefix = StoragePathHelper.CheckpointQuarterPrefix(
-            targetDate, ExtractBackupId(fullFolder));
+            fullBackup.CompletedAtUtc, ExtractBackupId(fullFolder));
 
         var checkpoints = new List<BackupRecord>();
         await foreach (var folder in _storage.ListFoldersAsync(checkpointPrefix, ct)
@@ -238,21 +239,17 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         {
             var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
             if (record is null) continue;
-            if (record.AnchorTs <= targetTs)
+            if (record.AnchorTs > fullBackup.AnchorTs && record.AnchorTs <= targetTs)
                 checkpoints.Add(record);
         }
-
-        // Sort checkpoints chronologically; include all that precede target
-        checkpoints.Sort((a, b) =>
-            a.AnchorTs.CompareTo(b.AnchorTs));
+        checkpoints.Sort((a, b) => a.AnchorTs.CompareTo(b.AnchorTs));
         chain.AddRange(checkpoints);
 
-        // 3. Determine the anchor after the last checkpoint (or full backup)
         var lastAnchorTs = chain[^1].AnchorTs;
 
-        // 4. Add daily incrementals between last checkpoint anchor and targetTs
+        // Walk incrementals from the full backup's quarter.
         var incrementalPrefix = StoragePathHelper.IncrementalQuarterPrefix(
-            targetDate, ExtractBackupId(fullFolder));
+            fullBackup.CompletedAtUtc, ExtractBackupId(fullFolder));
 
         var incrementals = new List<BackupRecord>();
         await foreach (var folder in _storage.ListFoldersAsync(incrementalPrefix, ct)
@@ -260,17 +257,53 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         {
             var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
             if (record is null) continue;
-            // Include incrementals that were generated after the last chain
-            // element (full or checkpoint) and don't exceed the target date.
             if (record.AnchorTs > lastAnchorTs && record.AnchorTs <= targetTs)
                 incrementals.Add(record);
         }
-
-        incrementals.Sort((a, b) =>
-            a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
+        incrementals.Sort((a, b) => a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
         chain.AddRange(incrementals);
 
         return chain.AsReadOnly();
+    }
+
+    // Searches backwards through quarters (up to 2 years) for the most recent
+    // full backup whose CompletedAtUtc is on or before targetDate.
+    private async Task<BackupRecord?> FindLatestEligibleFullBackupAsync(
+        string databaseName,
+        DateTimeOffset targetDate,
+        CancellationToken ct)
+    {
+        var year = targetDate.Year;
+        var q    = ((targetDate.Month - 1) / 3) + 1;
+
+        // Search up to 8 quarters back (2 years) before giving up.
+        for (int i = 0; i < 8; i++)
+        {
+            var prefix = $"full/{year}/Q{q}/";
+            BackupRecord? best = null;
+
+            await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                               .ConfigureAwait(false))
+            {
+                var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
+                if (record is null) continue;
+                if (!string.Equals(record.DatabaseName, databaseName,
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                if (record.BackupType != BackupType.Full) continue;
+                if (record.CompletedAtUtc > targetDate) continue;
+
+                if (best is null || record.CompletedAtUtc > best.CompletedAtUtc)
+                    best = record;
+            }
+
+            if (best is not null) return best;
+
+            // Step back one quarter.
+            q--;
+            if (q < 1) { q = 4; year--; }
+        }
+
+        return null;
     }
 
     // ------------------------------------------------------------------ //

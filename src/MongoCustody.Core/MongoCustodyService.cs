@@ -362,6 +362,40 @@ public sealed class MongoCustodyService : IMongoCustodyService
         CancellationToken ct = default)
         => _metadata.ResolveRestoreChainAsync(databaseName, targetDate, ct);
 
+    /// <inheritdoc />
+    public async Task<Models.RestoreChainPreview> PreviewRestoreChainAsync(
+        string databaseName,
+        DateTimeOffset targetDate,
+        CancellationToken ct = default)
+    {
+        var chain = await _metadata
+            .ResolveRestoreChainAsync(databaseName, targetDate, ct)
+            .ConfigureAwait(false);
+
+        var bestDate = chain.Count > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(chain[^1].AnchorTs)
+            : DateTimeOffset.MinValue;
+
+        var gap = targetDate - bestDate;
+        string? warning = null;
+        if (chain.Count == 0)
+            warning = $"No backup found for '{databaseName}' on or before {targetDate:yyyy-MM-dd}.";
+        else if (gap.TotalDays > 1)
+            warning =
+                $"Best available restore point is {bestDate:yyyy-MM-dd} " +
+                $"({(int)gap.TotalDays} day(s) before the requested {targetDate:yyyy-MM-dd}). " +
+                $"Data changes in that gap will not be restored.";
+
+        return new Models.RestoreChainPreview
+        {
+            DatabaseName      = databaseName,
+            RequestedDate     = targetDate,
+            BestAvailableDate = bestDate,
+            GapWarning        = warning,
+            Chain             = chain
+        };
+    }
+
     // ------------------------------------------------------------------ //
     //  Audit report
     // ------------------------------------------------------------------ //

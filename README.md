@@ -396,7 +396,7 @@ mongocustody restore \
   --approved-by compliance@example.com \
   --reason "INC-2025-0042"
 
-# Restore a subset of collections into a differently-named target database
+# Restore a subset of collections
 mongocustody restore \
   --config mongocustody.json \
   --database source-database \
@@ -404,11 +404,46 @@ mongocustody restore \
   --target-connection-string "mongodb://restore-instance..." \
   --target-database restore-target-db \
   --collections users projects
+
+# Skip confirmation prompt — required for unattended / batch use (e.g. dry-run automation)
+mongocustody restore \
+  --config mongocustody.json \
+  --database source-database \
+  --target-date 2025-04-15T00:00:00Z \
+  --target-connection-string "mongodb://restore-instance..." \
+  --target-database restore-target-db \
+  --auto-confirm
 ```
 
-The restore command verifies the target database exists and is empty before writing any data,
-then prints the resolved backup chain to stderr so you can confirm what will be applied. In
-text mode a live progress bar tracks collection steps across the entire restore chain:
+Before writing any data, the restore command resolves and prints the backup chain that will be applied:
+
+```
+────────────────────────────────────────────────────
+Restore chain for 'source-database'
+  Requested : 2025-04-15 00:00:00Z
+  Best point: 2025-04-14 23:45:00Z
+
+  #    Type          Completed               Folder
+  ---  ------------  ----------------------  ------
+  1    Full          2025-01-01 02:10:00Z    full/2025/Q1/backup-abc/
+  2    Checkpoint    2025-03-31 03:00:00Z    checkpoint/2025/Q1/backup-abc/2025-03-31/
+  3    Incremental   2025-04-14 23:45:00Z    incremental/2025/Q1/backup-abc/2025-04-14/
+────────────────────────────────────────────────────
+Proceed with restore? [y/N]
+```
+
+If the best available restore point is more than 1 day before the requested date, a warning is shown and confirmation is required:
+
+```
+WARNING: Best available restore point is 2025-03-20 (16 day(s) before the requested 2025-04-05).
+         Data changes in that gap will not be restored.
+
+Proceed with restore? [y/N]
+```
+
+**Chain resolution** searches backwards across quarter boundaries — a Q1 full backup is used to answer a Q2 restore request when no Q2 full backup exists on or before the target date. The search covers up to 2 years of history. If no eligible full backup is found at all, the command exits with an error.
+
+In text mode a live progress bar tracks collection steps across the entire restore chain:
 
 ```
 ⠼ Restoring 'source-database' → 'restore-target-db'  [██████░░░░░░░░░░░░░░]  3/15  20%  — projects
@@ -454,34 +489,29 @@ Results are ordered oldest-first. The default summary shows backup ID, database,
 
 ```bash
 # L1 — structural integrity (default, runs fast, no live DB required)
-mongocustody validate \
+mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level structural
 
 # L1 + L2 — structural integrity and count consistency
-mongocustody validate \
+mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level structural count
 
-# All levels except dry-run
-mongocustody validate \
-  --backup-id a3f8c2d1 \
-  --level structural count incremental
-
 # L4 — full restore dry-run (requires an ephemeral target account)
-mongocustody validate \
+mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level dry-run \
   --dry-run-connection-string "mongodb://ephemeral-account..."
 
 # All levels in one pass
-mongocustody validate \
+mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level all \
   --dry-run-connection-string "mongodb://ephemeral-account..."
 
 # Machine-readable output
-mongocustody validate --backup-id a3f8c2d1 --level structural --output json
+mongocustody validate backup --backup-id a3f8c2d1 --level structural --output json
 ```
 
 | Level flag | Alias | What it checks | Live DB needed |
@@ -493,7 +523,48 @@ mongocustody validate --backup-id a3f8c2d1 --level structural --output json
 
 Multiple levels can be passed as space-separated values (`--level structural count`) or comma-separated (`--level structural,count`). `--level all` runs all four levels and requires `--dry-run-connection-string`.
 
-> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`, `chain` (restore chain preview).
+#### Validate restore chain
+
+Shows the backup chain that *would* be applied for a given database and date without writing any data. Useful for pre-flight checks, capacity estimation, and debugging restore issues.
+
+```bash
+# Show the chain for a specific restore point
+mongocustody validate chain \
+  --config mongocustody.json \
+  --database source-database \
+  --date 2025-04-15T00:00:00Z
+
+# Show the latest restorable point (omit --date)
+mongocustody validate chain \
+  --config mongocustody.json \
+  --database source-database
+
+# Machine-readable output
+mongocustody validate chain \
+  --database source-database \
+  --date 2025-04-15T00:00:00Z \
+  --output json
+```
+
+Sample output:
+
+```
+────────────────────────────────────────────────────
+Restore chain for 'source-database'
+  Requested : 2025-04-15 00:00:00Z
+  Best point: 2025-04-14 23:45:00Z
+
+  #    Type          Completed               Folder
+  ---  ------------  ----------------------  ------
+  1    Full          2025-01-01 02:10:00Z    full/2025/Q1/backup-abc/
+  2    Checkpoint    2025-03-31 03:00:00Z    checkpoint/2025/Q1/backup-abc/2025-03-31/
+  3    Incremental   2025-04-14 23:45:00Z    incremental/2025/Q1/backup-abc/2025-04-14/
+────────────────────────────────────────────────────
+```
+
+If the best available point is more than 1 day before the requested date, a gap warning is shown. The command exits with code `0` when a chain is found, `1` when no eligible backup exists.
+
+> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`.
 
 ---
 
@@ -617,10 +688,10 @@ Run validation at any time via the library or CLI:
 
 ```bash
 # Validate structural integrity and count consistency
-mongocustody validate --backup-id a3f8c2d1 --level structural,count
+mongocustody validate backup --backup-id a3f8c2d1 --level structural,count
 
 # Full restore dry-run (requires an ephemeral target account)
-mongocustody validate \
+mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level dry-run \
   --dry-run-connection-string "mongodb://ephemeral-account..."
