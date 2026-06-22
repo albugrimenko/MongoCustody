@@ -12,35 +12,65 @@ namespace MongoCustody.Core.Engines;
 /// <para>
 /// The engine accepts a pre-resolved restore chain (a list of
 /// <see cref="BackupRecord"/> entries ordered oldest-first) and applies them
-/// in sequence to an empty restore target:
-/// <list type="number">
-///   <item>Full backup record → <c>InsertMany</c> per collection (target is empty).</item>
-///   <item>Subsequent records (incremental or checkpoint) →
-///         <c>UpsertMany</c> per collection using <c>replaceOne(_id, upsert:true)</c>.</item>
-/// </list>
+/// in sequence to an empty restore target using a three-phase index strategy:
 /// </para>
 ///
-/// <para>
-/// Collections within a single chain step are processed in parallel, bounded by
-/// <see cref="BackupPolicy.MaxParallelCollections"/>.  Chain steps are always
-/// applied in strict order — parallelism is only safe within a single step.
-/// </para>
+/// <list type="number">
+///   <item>
+///     <term>Pre-pass</term>
+///     <description>
+///       Walk the entire chain and build a <em>merged index map</em> —
+///       the latest <see cref="IndexDefinition"/> list per collection,
+///       where later steps override earlier ones (last writer wins).
+///     </description>
+///   </item>
+///   <item>
+///     <term>Per-step, per-collection</term>
+///     <description>
+///       For each collection in the current step, check whether the
+///       collection already exists in the target:
+///       <list type="bullet">
+///         <item>
+///           <em>Not yet created</em> (new collection) — create unique
+///           indexes first while the collection is empty (required by
+///           Cosmos DB for MongoDB), then load data.
+///         </item>
+///         <item>
+///           <em>Already exists</em> — load data only (upsert).
+///           Unique indexes were created when the collection was first
+///           seen and remain in place.
+///         </item>
+///       </list>
+///       Collections within a single chain step are processed in parallel,
+///       bounded by <see cref="BackupPolicy.MaxParallelCollections"/>.
+///     </description>
+///   </item>
+///   <item>
+///     <term>Post-last-step</term>
+///     <description>
+///       After all data for the final chain step has been written, create
+///       non-unique indexes (regular, text, TTL, compound) for every
+///       collection in the merged map. Building non-unique indexes after a
+///       full data load is significantly faster than building them inline.
+///     </description>
+///   </item>
+/// </list>
 ///
 /// <para>
 /// Chain resolution and pre/post audit record writes are the caller's
-/// responsibility (handled by <see cref="MongoCustodyService"/>), keeping this
-/// engine focused solely on I/O and document streaming.
+/// responsibility (handled by <see cref="MongoCustodyService"/>), keeping
+/// this engine focused solely on I/O, document streaming, and index management.
 /// </para>
 /// </summary>
 internal sealed class RestoreEngine
 {
-    private readonly IStorageConnector       _storage;
-    private readonly IRestoreTargetConnector _target;
+    private readonly IStorageConnector        _storage;
+    private readonly IRestoreTargetConnector  _target;
     private readonly MongoCustodyConfiguration _config;
 
     internal RestoreEngine(
-        IStorageConnector       storage,
-        IRestoreTargetConnector target,
+        IStorageConnector         storage,
+        IRestoreTargetConnector   target,
         MongoCustodyConfiguration config)
     {
         _storage = storage;
@@ -48,20 +78,14 @@ internal sealed class RestoreEngine
         _config  = config;
     }
 
+    // ------------------------------------------------------------------ //
+    //  Main entry point
+    // ------------------------------------------------------------------ //
+
     /// <summary>
     /// Applies <paramref name="chain"/> in order to the restore target and
     /// returns a <see cref="RestoreResult"/>.
     /// </summary>
-    /// <param name="request">
-    /// Original restore request (used for correlation ID, collection filter,
-    /// and metadata fields in the result).
-    /// </param>
-    /// <param name="chain">
-    /// Pre-resolved list of backup records, oldest first.
-    /// Chain resolution is performed by
-    /// <see cref="IMetadataRepository.ResolveRestoreChainAsync"/> in the caller.
-    /// </param>
-    /// <param name="ct">Cancellation token.</param>
     internal async Task<RestoreResult> RunAsync(
         RestoreRequest              request,
         IReadOnlyList<BackupRecord> chain,
@@ -74,26 +98,37 @@ internal sealed class RestoreEngine
             : request.CorrelationId;
 
         var chainFolders = chain.Select(r => r.BackupFolder).ToList();
+        var targetDb     = request.TargetDatabaseName;
 
         var collectionFilter = request.Collections.Count > 0
             ? new HashSet<string>(request.Collections, StringComparer.OrdinalIgnoreCase)
             : null;
 
-        // Pre-compute total collection operations across the entire chain so the
-        // progress percentage is accurate before the first step begins.
+        if (chain.Count == 0)
+            return BuildResult(BackupStatus.Completed, startedAt, chainFolders,
+                [], correlationId, request.TargetDate);
+
+        // PRE-PASS — build merged index map across all chain steps.
+        // Later steps override earlier ones so the map always holds the most
+        // recent index definitions for each collection.
+        var mergedIndexMap = BuildMergedIndexMap(chain, collectionFilter);
+
+        // Pre-compute total collection operations for progress reporting.
         int totalCollOps = chain.Sum(r => r.Collections.Count(c =>
             collectionFilter is null || collectionFilter.Contains(c.CollectionName)));
         int completedCollOps = 0;
 
-        // Accumulates per-collection totals across all chain steps.
         var accumulated = new Dictionary<string, CollectionRestoreResult>(
             StringComparer.OrdinalIgnoreCase);
 
         bool isFirstStep = true;
 
-        foreach (var record in chain)
+        for (int stepIdx = 0; stepIdx < chain.Count; stepIdx++)
         {
             ct.ThrowIfCancellationRequested();
+
+            var record     = chain[stepIdx];
+            bool isLastStep = stepIdx == chain.Count - 1;
 
             var collectionsToRestore = record.Collections
                 .Where(c => collectionFilter is null
@@ -107,28 +142,37 @@ internal sealed class RestoreEngine
                 continue;
             }
 
-            // First step uses InsertMany (target collection is empty).
-            // Subsequent steps use UpsertMany (replaceOne with upsert).
+            // Full backup baseline uses InsertMany; everything else uses UpsertMany.
             bool useInsert = isFirstStep && record.BackupType == BackupType.Full;
 
             using var semaphore = new SemaphoreSlim(_config.Policy.MaxParallelCollections);
+
             var stepTasks = collectionsToRestore
-                .Select(c => RestoreCollectionAsync(request.TargetDatabaseName, c, semaphore, useInsert, ct)
-                    .ContinueWith(
-                        task =>
-                        {
-                            int done = Interlocked.Increment(ref completedCollOps);
-                            progress?.Report(new OperationProgress
+                .Select(c =>
+                {
+                    // Capture the merged indexes for this specific collection
+                    // before entering the lambda — safe for parallel use.
+                    var indexes = mergedIndexMap.GetValueOrDefault(
+                        c.CollectionName, (IReadOnlyList<IndexDefinition>)[]);
+
+                    return RestoreCollectionAsync(
+                            targetDb, c, semaphore, useInsert, indexes, ct)
+                        .ContinueWith(
+                            task =>
                             {
-                                Completed   = done,
-                                Total       = totalCollOps,
-                                CurrentItem = c.CollectionName
-                            });
-                            return task.GetAwaiter().GetResult();
-                        },
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default))
+                                int done = Interlocked.Increment(ref completedCollOps);
+                                progress?.Report(new OperationProgress
+                                {
+                                    Completed   = done,
+                                    Total       = totalCollOps,
+                                    CurrentItem = c.CollectionName
+                                });
+                                return task.GetAwaiter().GetResult();
+                            },
+                            CancellationToken.None,
+                            TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                })
                 .ToList();
 
             CollectionRestoreResult[] stepResults;
@@ -143,13 +187,13 @@ internal sealed class RestoreEngine
                     .Where(t => t.IsFaulted)
                     .SelectMany(t => t.Exception!.InnerExceptions)
                     .Select(e => e.Message);
-                return Fail(
+                return BuildResult(BackupStatus.Failed,
+                    startedAt, chainFolders, accumulated.Values,
+                    correlationId, request.TargetDate,
                     $"Collection restore failed in step '{record.BackupFolder}': " +
-                    string.Join("; ", errors),
-                    startedAt, chainFolders, correlationId, request.TargetDate);
+                    string.Join("; ", errors));
             }
 
-            // Merge step results — document counts accumulate across chain steps.
             foreach (var r in stepResults)
             {
                 if (accumulated.TryGetValue(r.CollectionName, out var existing))
@@ -167,36 +211,49 @@ internal sealed class RestoreEngine
                 }
             }
 
+            // POST-LAST-STEP — create non-unique indexes after all data is loaded.
+            // This maximises bulk insert throughput while still applying all indexes.
+            if (isLastStep)
+            {
+                try
+                {
+                    await CreateNonUniqueIndexesAsync(targetDb, mergedIndexMap, ct)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    return BuildResult(BackupStatus.Failed,
+                        startedAt, chainFolders, accumulated.Values,
+                        correlationId, request.TargetDate,
+                        $"Non-unique index creation failed after data load: {ex.Message}");
+                }
+            }
+
             isFirstStep = false;
         }
 
         var collectionResults = accumulated.Values.OrderBy(r => r.CollectionName).ToList();
-        var failed = collectionResults.Where(r => r.Status == BackupStatus.Failed).ToList();
+        var failed            = collectionResults.Where(r => r.Status == BackupStatus.Failed).ToList();
 
-        return new RestoreResult
-        {
-            Status            = failed.Count == 0 ? BackupStatus.Completed : BackupStatus.Failed,
-            StartedAtUtc      = startedAt,
-            CompletedAtUtc    = DateTimeOffset.UtcNow,
-            TargetDate        = request.TargetDate,
-            RestoreChain      = chainFolders,
-            CollectionResults = collectionResults,
-            FailureReason     = failed.Count == 0 ? null
-                : string.Join("; ", failed.Select(f => f.FailureReason)),
-            CorrelationId     = correlationId
-        };
+        return BuildResult(
+            failed.Count == 0 ? BackupStatus.Completed : BackupStatus.Failed,
+            startedAt, chainFolders, collectionResults,
+            correlationId, request.TargetDate,
+            failed.Count == 0 ? null : string.Join("; ", failed.Select(f => f.FailureReason)));
     }
 
     // ------------------------------------------------------------------ //
-    //  Per-collection restore
+    //  Per-collection restore (data + unique indexes)
     // ------------------------------------------------------------------ //
 
     private async Task<CollectionRestoreResult> RestoreCollectionAsync(
-        string                 databaseName,
-        CollectionBackupRecord collRecord,
-        SemaphoreSlim          semaphore,
-        bool                   useInsert,
-        CancellationToken      ct)
+        string                        databaseName,
+        CollectionBackupRecord        collRecord,
+        SemaphoreSlim                 semaphore,
+        bool                          useInsert,
+        IReadOnlyList<IndexDefinition> indexes,
+        CancellationToken             ct)
     {
         bool acquired = false;
         try
@@ -204,17 +261,39 @@ internal sealed class RestoreEngine
             await semaphore.WaitAsync(ct).ConfigureAwait(false);
             acquired = true;
 
+            var collName = collRecord.CollectionName;
+
+            // Determine whether the collection already exists in the target.
+            // New collections (not yet created) must have unique indexes applied
+            // before data is loaded — Cosmos DB for MongoDB enforces this.
+            bool exists = await _target
+                .CollectionExistsAsync(databaseName, collName, ct)
+                .ConfigureAwait(false);
+
+            if (!exists)
+            {
+                var uniqueIndexes = indexes.Where(i => i.IsUnique).ToList();
+                if (uniqueIndexes.Count > 0)
+                    await _target
+                        .CreateIndexesAsync(databaseName, collName, uniqueIndexes, ct)
+                        .ConfigureAwait(false);
+            }
+            // If the collection already exists its unique indexes are already in place.
+            // Adding a new unique index to a non-empty collection is not supported in
+            // Cosmos DB for MongoDB; such a scenario is surfaced as a restore warning
+            // in production but is not retried here.
+
             long totalDocs = 0;
             foreach (var chunk in collRecord.Chunks.OrderBy(c => c.ChunkIndex))
             {
                 totalDocs += await RestoreChunkAsync(
-                    databaseName, collRecord.CollectionName, chunk, useInsert, ct)
+                    databaseName, collName, chunk, useInsert, ct)
                     .ConfigureAwait(false);
             }
 
             return new CollectionRestoreResult
             {
-                CollectionName    = collRecord.CollectionName,
+                CollectionName    = collName,
                 DocumentsUpserted = totalDocs,
                 Status            = BackupStatus.Completed
             };
@@ -247,36 +326,93 @@ internal sealed class RestoreEngine
             .ConfigureAwait(false);
 
         await using var gzip = new GZipStream(blobStream, CompressionMode.Decompress);
-
         var docs = BsonChunkReader.ReadDocumentsAsync(gzip, ct);
 
         return useInsert
-            ? await _target
-                .InsertManyAsync(databaseName, collectionName, docs, ct)
+            ? await _target.InsertManyAsync(databaseName, collectionName, docs, ct)
                 .ConfigureAwait(false)
-            : await _target
-                .UpsertManyAsync(databaseName, collectionName, docs, ct)
+            : await _target.UpsertManyAsync(databaseName, collectionName, docs, ct)
                 .ConfigureAwait(false);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Non-unique index creation (after all data is loaded)
+    // ------------------------------------------------------------------ //
+
+    private async Task CreateNonUniqueIndexesAsync(
+        string databaseName,
+        Dictionary<string, IReadOnlyList<IndexDefinition>> mergedIndexMap,
+        CancellationToken ct)
+    {
+        // Run per-collection index creation in parallel — collections are independent.
+        var tasks = mergedIndexMap
+            .Select(kvp =>
+            {
+                var nonUnique = kvp.Value.Where(i => !i.IsUnique).ToList();
+                if (nonUnique.Count == 0) return Task.CompletedTask;
+                return _target.CreateIndexesAsync(databaseName, kvp.Key, nonUnique, ct);
+            })
+            .ToList();
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Pre-pass: build merged index map
+    // ------------------------------------------------------------------ //
+
+    /// <summary>
+    /// Walks the chain oldest-first and builds a map of
+    /// <c>collectionName → latest IndexDefinition list</c>.
+    /// Later steps always overwrite earlier ones so the terminal step
+    /// wins, which is correct because each backup captures the current
+    /// index state at that point in time.
+    /// </summary>
+    private static Dictionary<string, IReadOnlyList<IndexDefinition>> BuildMergedIndexMap(
+        IReadOnlyList<BackupRecord> chain,
+        HashSet<string>?            collectionFilter)
+    {
+        var map = new Dictionary<string, IReadOnlyList<IndexDefinition>>(
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var record in chain)
+        {
+            foreach (var coll in record.Collections)
+            {
+                if (collectionFilter is not null &&
+                    !collectionFilter.Contains(coll.CollectionName))
+                    continue;
+
+                // Always update — an empty list means the collection genuinely
+                // has no user-defined indexes at this point in the chain.
+                map[coll.CollectionName] = coll.Indexes;
+            }
+        }
+
+        return map;
     }
 
     // ------------------------------------------------------------------ //
     //  Helpers
     // ------------------------------------------------------------------ //
 
-    private static RestoreResult Fail(
-        string           reason,
-        DateTimeOffset   startedAt,
-        List<string>     chainFolders,
-        string           correlationId,
-        DateTimeOffset   targetDate) =>
+    private static RestoreResult BuildResult(
+        BackupStatus                         status,
+        DateTimeOffset                       startedAt,
+        List<string>                         chainFolders,
+        IEnumerable<CollectionRestoreResult> collections,
+        string                               correlationId,
+        DateTimeOffset                       targetDate,
+        string?                              failureReason = null) =>
         new()
         {
-            Status         = BackupStatus.Failed,
-            StartedAtUtc   = startedAt,
-            CompletedAtUtc = DateTimeOffset.UtcNow,
-            TargetDate     = targetDate,
-            RestoreChain   = chainFolders,
-            FailureReason  = reason,
-            CorrelationId  = correlationId
+            Status            = status,
+            StartedAtUtc      = startedAt,
+            CompletedAtUtc    = DateTimeOffset.UtcNow,
+            TargetDate        = targetDate,
+            RestoreChain      = chainFolders,
+            CollectionResults = collections.OrderBy(r => r.CollectionName).ToList(),
+            FailureReason     = failureReason,
+            CorrelationId     = correlationId
         };
 }

@@ -64,6 +64,33 @@ public interface IRestoreTargetConnector : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns <c>true</c> if <paramref name="collectionName"/> already
+    /// exists in <paramref name="databaseName"/> on the restore target.
+    /// Used during incremental and checkpoint restore steps to detect newly
+    /// added collections that must receive unique indexes before data load.
+    /// </summary>
+    Task<bool> CollectionExistsAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates the supplied indexes on <paramref name="collectionName"/>.
+    /// Runs the MongoDB <c>createIndexes</c> command with the full
+    /// specification stored in each <see cref="Models.IndexDefinition.Spec"/>.
+    /// Silently skips <c>indexes</c> that are already present by name.
+    /// </summary>
+    /// <param name="databaseName">Target database name.</param>
+    /// <param name="collectionName">Target collection name.</param>
+    /// <param name="indexes">Index definitions to create.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task CreateIndexesAsync(
+        string databaseName,
+        string collectionName,
+        IReadOnlyList<Models.IndexDefinition> indexes,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Returns the total document count for a collection in the restore
     /// target. Used for post-restore count verification in Level 4
     /// (Restore Dry-Run) validation.

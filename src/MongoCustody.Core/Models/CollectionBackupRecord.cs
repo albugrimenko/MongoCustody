@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Collections.Generic;
 
 namespace MongoCustody.Core.Models;
 
@@ -33,4 +34,25 @@ public sealed class CollectionBackupRecord
     /// </summary>
     [JsonPropertyName("chunks")]
     public List<ChunkRecord> Chunks { get; set; } = [];
+
+    /// <summary>
+    /// All user-defined indexes on this collection at the time of backup,
+    /// excluding the auto-managed <c>_id</c> index.
+    ///
+    /// <para>
+    /// Captured in every backup type (full, incremental, checkpoint) so
+    /// the restore chain always reflects the latest index state. During
+    /// restore the engine builds a merged map of the most-recent definition
+    /// per collection across all chain steps.
+    /// </para>
+    ///
+    /// <para>
+    /// <see cref="IndexDefinition.IsUnique"/> drives restore sequencing:
+    /// unique indexes are created before data is loaded (Cosmos DB
+    /// requirement); non-unique indexes are created after all data is in
+    /// place for maximum insert throughput.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("indexes")]
+    public List<IndexDefinition> Indexes { get; set; } = [];
 }

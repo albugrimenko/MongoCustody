@@ -126,6 +126,20 @@ public interface IBackupSourceConnector
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all user-defined indexes on <paramref name="collectionName"/>,
+    /// excluding the auto-managed <c>_id</c> index.
+    /// Each <see cref="Models.IndexDefinition"/> carries the full index
+    /// specification (key pattern and all options) as returned by the
+    /// MongoDB <c>listIndexes</c> command.
+    /// Stored in <see cref="Models.CollectionBackupRecord.Indexes"/> and
+    /// used during restore to recreate indexes with exact fidelity.
+    /// </summary>
+    Task<IReadOnlyList<Models.IndexDefinition>> ListIndexesAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Verifies the connector can reach the MongoDB instance.
     /// Returns <c>true</c> and an optional latency if reachable.
     /// </summary>

@@ -77,6 +77,21 @@ public sealed class FullBackupEngineTests
         return mock;
     }
 
+    /// <summary>
+    /// Returns a source mock pre-configured with safe defaults for the new
+    /// <c>ListIndexesAsync</c> method so existing tests don't need updating.
+    /// </summary>
+    private static Mock<IBackupSourceConnector> MakeSourceMock()
+    {
+        var mock = new Mock<IBackupSourceConnector>();
+
+        mock.Setup(s => s.ListIndexesAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<IndexDefinition>());
+
+        return mock;
+    }
+
     private static FullBackupEngine MakeEngine(
         Mock<IBackupSourceConnector> sourceMock,
         Mock<IStorageConnector>      storageMock,
@@ -92,7 +107,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_HappyPath_ReturnsCompleted()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -130,7 +145,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_EmptyCollection_ProducesZeroDocuments()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -162,7 +177,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_ManifestSealedExactlyOnce_PerDatabase()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -195,7 +210,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_SavedRecord_HasCorrectMetadata()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -244,7 +259,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_AnchorCaptureFailure_ReturnsFailed()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -270,7 +285,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_CollectionEnumerationFailure_ReturnsFailed()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -297,7 +312,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_ManifestSealFailure_ReturnsFailed()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -351,7 +366,7 @@ public sealed class FullBackupEngineTests
             }
         };
 
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 
@@ -393,7 +408,7 @@ public sealed class FullBackupEngineTests
     [TestMethod]
     public async Task RunAsync_Cancelled_PropagatesCancellation()
     {
-        var sourceMock  = new Mock<IBackupSourceConnector>();
+        var sourceMock  = MakeSourceMock();
         var storageMock = MakeStorageMock();
         var metaMock    = new Mock<IMetadataRepository>();
 

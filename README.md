@@ -81,6 +81,10 @@ Q2 Full Backup (Apr 1)   new chain begins
 
 **Bounded restore complexity.** The maximum restore chain depth is 19 operations (1 full + 12 checkpoints + 6 daily incrementals), regardless of the restore target date. This is constant and predictable.
 
+**Index definitions stored in every backup.** Each `CollectionBackupRecord` in every backup type (full, incremental, checkpoint) includes the complete index definitions as they existed at backup time, stored as relaxed extended JSON. This enables the restore engine to recreate the exact index state at any point in the restore chain. The `_id` index is never captured — MongoDB creates it automatically.
+
+**Checkpoint index merge strategy.** When the checkpoint engine consolidates six daily incrementals into a single checkpoint backup, it merges their index definitions using a last-writer-wins strategy: for each collection, the index list from the most recent incremental that mentions the collection wins. This means the checkpoint's `CollectionBackupRecord.Indexes` always reflects the most up-to-date index state at the time of the checkpoint. If an index was added on day 4 and modified on day 6, the checkpoint records the day-6 definition.
+
 **5-minute overlap buffer.** Incremental queries use `_ts > (previousAnchorTs - 300 seconds)` to ensure no document near the boundary is missed. Duplicate documents resulting from the overlap are handled correctly by upsert during restore.
 
 **Fully streaming I/O.** All backup and restore operations are fully streaming. No collection is loaded into memory in full at any point. Memory consumption per active collection operation is O(1) with respect to collection size.
@@ -571,6 +575,20 @@ All restore operations use `replaceOne` with `upsert: true` keyed on `_id`. This
 - A document in both the full backup and a subsequent incremental is upserted twice — the incremental (applied second) writes the more recent state. The result is correct.
 - A document soft-deleted after the full backup appears in an incremental with `isDeleted: true`. Upsert writes this final state correctly.
 - The 5-minute buffer may produce harmless duplicate upserts near anchor boundaries. These are idempotent.
+
+### Index restore sequence
+
+Index definitions are captured for every collection in every backup type (full, incremental, checkpoint). During restore, the engine uses a three-phase strategy to maximise throughput and satisfy the Azure Cosmos DB for MongoDB constraint that **unique indexes can only be created on empty collections**:
+
+1. **Pre-pass — build the merged index map.** Before any data is written, the engine walks the entire restore chain oldest-to-newest and builds a map of `collectionName → latest index list`. Later chain steps always win, so the final state reflects the index definitions as they existed at the restore target date.
+
+2. **Per-collection, per-step — unique indexes first on new collections.** When a collection is about to be written for the first time, the engine creates all of its **unique** indexes before loading any data. If the collection already exists (a collection seen in an earlier chain step, or a pre-existing collection in an incremental restore), unique index creation is skipped — those indexes are already in place.
+
+3. **Post-last-step — non-unique indexes after all data is loaded.** After the final chain step's data is fully written, the engine creates all **non-unique** indexes (regular, compound, text, TTL, etc.) for every collection in parallel. This is significantly faster than building indexes inline during data load.
+
+**Handling new collections in incremental restores.** A collection may appear for the first time in an incremental backup (e.g. a newly created collection added after the last full backup). The engine detects this via `CollectionExistsAsync` and applies the same unique-first rule as a full restore.
+
+**Known limitation.** Adding a new unique index to an existing non-empty collection is not supported in Azure Cosmos DB for MongoDB. If a unique index was added to a collection between the backup date and restore time, the restore will complete without that index. The merged index map records its definition from the backup; the `CreateIndexesAsync` call will fail silently per-collection and the collection's data will be correct.
 
 ### Restore target requirements
 

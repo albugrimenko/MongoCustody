@@ -6,6 +6,7 @@ using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 namespace MongoCustody.Connectors;
 
@@ -208,6 +209,54 @@ public sealed class MongoDbConnector : IBackupSourceConnector
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<IndexDefinition>> ListIndexesAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default)
+    {
+        var collection = await GetCollectionAsync(databaseName, collectionName, ct)
+            .ConfigureAwait(false);
+
+        using var cursor = await collection.Indexes
+            .ListAsync(cancellationToken: ct)
+            .ConfigureAwait(false);
+
+        var results = new List<IndexDefinition>();
+
+        while (await cursor.MoveNextAsync(ct).ConfigureAwait(false))
+        {
+            foreach (var indexDoc in cursor.Current)
+            {
+                // Always skip the _id index — auto-created by MongoDB on collection creation.
+                if (IsIdIndex(indexDoc)) continue;
+
+                var name     = indexDoc.GetValue("name", BsonString.Empty).AsString;
+                var isUnique = indexDoc.TryGetValue("unique", out var u) && u.IsBoolean && u.AsBoolean;
+
+                // Serialise to relaxed extended JSON so plain integers (1, -1) and
+                // booleans round-trip correctly through System.Text.Json.JsonElement.
+                var json = indexDoc.ToJson(new JsonWriterSettings
+                {
+                    OutputMode = JsonOutputMode.RelaxedExtendedJson
+                });
+
+                JsonElement spec;
+                using (var jsonDoc = JsonDocument.Parse(json))
+                    spec = jsonDoc.RootElement.Clone();
+
+                results.Add(new IndexDefinition
+                {
+                    Name     = name,
+                    IsUnique = isUnique,
+                    Spec     = spec,
+                });
+            }
+        }
+
+        return results.AsReadOnly();
+    }
+
+    /// <inheritdoc />
     public async Task<(bool IsHealthy, long LatencyMs, string? ErrorMessage)>
         CheckHealthAsync(CancellationToken ct = default)
     {
@@ -286,6 +335,24 @@ public sealed class MongoDbConnector : IBackupSourceConnector
     private DatabaseConfiguration GetDatabaseConfig(string databaseName) =>
         _config.Databases.FirstOrDefault(d => d.DatabaseName == databaseName)
         ?? new DatabaseConfiguration { DatabaseName = databaseName };
+
+    private static bool IsIdIndex(BsonDocument indexDoc)
+    {
+        // The _id index always has key = { "_id": 1 } and name = "_id_".
+        // We match on both to be safe.
+        if (indexDoc.TryGetValue("name", out var nameVal) &&
+            nameVal.IsString && nameVal.AsString == "_id_")
+            return true;
+
+        if (indexDoc.TryGetValue("key", out var keyVal) &&
+            keyVal.IsBsonDocument)
+        {
+            var key = keyVal.AsBsonDocument;
+            return key.ElementCount == 1 && key.TryGetValue("_id", out _);
+        }
+
+        return false;
+    }
 
     private HashSet<string> GetExcludedCollections(string databaseName)
     {

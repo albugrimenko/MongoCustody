@@ -1,4 +1,5 @@
 using MongoCustody.Core.Abstractions;
+using MongoCustody.Core.Models;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
@@ -79,6 +80,56 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
                 $"found {collections.Count} collection(s): {sample}{more}. " +
                 $"Drop all collections before running a restore.");
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> CollectionExistsAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default)
+    {
+        var db = _client.GetDatabase(databaseName);
+        using var cursor = await db
+            .ListCollectionNamesAsync(cancellationToken: ct)
+            .ConfigureAwait(false);
+        var names = await cursor.ToListAsync(ct).ConfigureAwait(false);
+        return names.Contains(collectionName, StringComparer.Ordinal);
+    }
+
+    /// <inheritdoc />
+    public async Task CreateIndexesAsync(
+        string databaseName,
+        string collectionName,
+        IReadOnlyList<IndexDefinition> indexes,
+        CancellationToken ct = default)
+    {
+        if (indexes.Count == 0) return;
+
+        var indexDocs = new BsonArray();
+        foreach (var idx in indexes)
+        {
+            // Parse the stored relaxed extended JSON spec back to BsonDocument.
+            var specDoc = BsonDocument.Parse(idx.Spec.GetRawText());
+
+            // Strip server-managed fields that must not be passed to createIndexes.
+            specDoc.Remove("v");   // wire protocol version — server sets this
+            specDoc.Remove("ns");  // namespace — removed in MongoDB 4.4+
+
+            indexDocs.Add(specDoc);
+        }
+
+        // Use the raw createIndexes command so the spec round-trips with exact
+        // fidelity — no manual option mapping required.
+        var command = new BsonDocument
+        {
+            { "createIndexes", collectionName },
+            { "indexes", indexDocs }
+        };
+
+        await _client
+            .GetDatabase(databaseName)
+            .RunCommandAsync<BsonDocument>(command, cancellationToken: ct)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />

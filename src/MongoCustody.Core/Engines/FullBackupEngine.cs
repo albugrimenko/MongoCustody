@@ -250,9 +250,18 @@ internal sealed class FullBackupEngine
             acquired = true;
 
             var docs = _source.StreamAllDocumentsAsync(databaseName, collectionName, ct);
-            return await chunkWriter.WriteCollectionChunksAsync(
-                folder, databaseName, collectionName, docs, ct)
+            var collRecord = await chunkWriter
+                .WriteCollectionChunksAsync(folder, databaseName, collectionName, docs, ct)
                 .ConfigureAwait(false);
+
+            // Capture index definitions after data export — both operations use
+            // the same semaphore slot so parallelism stays within policy bounds.
+            var indexes = await _source
+                .ListIndexesAsync(databaseName, collectionName, ct)
+                .ConfigureAwait(false);
+
+            collRecord.Indexes = indexes?.ToList() ?? [];
+            return collRecord;
         }
         finally
         {

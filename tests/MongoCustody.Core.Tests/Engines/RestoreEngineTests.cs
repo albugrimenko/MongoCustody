@@ -89,6 +89,30 @@ public sealed class RestoreEngineTests
         };
     }
 
+    /// <summary>
+    /// Returns a target mock pre-configured with safe defaults for all
+    /// <see cref="IRestoreTargetConnector"/> members, including the new
+    /// <c>CollectionExistsAsync</c> and <c>CreateIndexesAsync</c> methods.
+    /// Individual tests can override any setup on top of this baseline.
+    /// </summary>
+    private static Mock<IRestoreTargetConnector> MakeTargetMock()
+    {
+        var mock = new Mock<IRestoreTargetConnector>();
+
+        // Default: every collection is new (not yet created) — safe for full restore.
+        mock.Setup(t => t.CollectionExistsAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        mock.Setup(t => t.CreateIndexesAsync(
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<IndexDefinition>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        return mock;
+    }
+
     private static RestoreEngine MakeEngine(
         Mock<IStorageConnector>         storageMock,
         Mock<IRestoreTargetConnector>   targetMock,
@@ -99,6 +123,7 @@ public sealed class RestoreEngineTests
         new()
         {
             DatabaseName           = DbName,
+            TargetDatabaseName     = DbName,
             TargetConnectionString = "mongodb://restore-target",
             TargetDate             = DateTimeOffset.UtcNow,
             Collections            = collectionFilter is null ? [] : [collectionFilter],
@@ -118,7 +143,7 @@ public sealed class RestoreEngineTests
         var blobBytes      = BuildBlobBytes(docCount);
 
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
@@ -171,7 +196,7 @@ public sealed class RestoreEngineTests
         var incrBlob = BuildBlobBytes(incrDocs);
 
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
@@ -258,7 +283,7 @@ public sealed class RestoreEngineTests
         const string blobB = "full/2025/Q1/backup-id/test-db.col-b.part-001.bson.gz";
 
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(blobA, It.IsAny<CancellationToken>()))
@@ -318,7 +343,7 @@ public sealed class RestoreEngineTests
     {
         var blobBytes   = BuildBlobBytes(5);
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
@@ -361,7 +386,7 @@ public sealed class RestoreEngineTests
     public async Task RunAsync_BlobReadError_ReturnsFailedResult()
     {
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
@@ -401,7 +426,7 @@ public sealed class RestoreEngineTests
     {
         const string correlationId = "my-correlation-id";
         var storageMock = new Mock<IStorageConnector>();
-        var targetMock  = new Mock<IRestoreTargetConnector>();
+        var targetMock  = MakeTargetMock();
 
         storageMock
             .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
@@ -421,6 +446,202 @@ public sealed class RestoreEngineTests
         var result = await engine.RunAsync(request, [MakeFullBackupRecord()], null, CancellationToken.None);
 
         Assert.AreEqual(correlationId, result.CorrelationId);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Index restore sequencing
+    // ------------------------------------------------------------------ //
+
+    [TestMethod]
+    public async Task RunAsync_UniqueIndex_CreatedBeforeData_NonUniqueAfter()
+    {
+        // Arrange — one collection with one unique and one regular index.
+        var spec = System.Text.Json.JsonDocument.Parse(
+            """{"key":{"email":1},"name":"email_1","unique":true}""").RootElement.Clone();
+        var nonUniqueSpec = System.Text.Json.JsonDocument.Parse(
+            """{"key":{"createdAt":-1},"name":"createdAt_-1"}""").RootElement.Clone();
+
+        var indexes = new List<IndexDefinition>
+        {
+            new() { Name = "email_1",    IsUnique = true,  Spec = spec },
+            new() { Name = "createdAt_-1", IsUnique = false, Spec = nonUniqueSpec }
+        };
+
+        var record = MakeFullBackupRecord();
+        record.Collections[0].Indexes = indexes;
+
+        var blobBytes   = BuildBlobBytes(3);
+        var storageMock = new Mock<IStorageConnector>();
+        var targetMock  = MakeTargetMock();
+
+        storageMock
+            .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(blobBytes));
+
+        targetMock
+            .Setup(t => t.InsertManyAsync(
+                DbName, CollName,
+                It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(3L);
+
+        var createOrder = new List<string>();
+
+        targetMock
+            .Setup(t => t.CreateIndexesAsync(
+                DbName, CollName,
+                It.Is<IReadOnlyList<IndexDefinition>>(l => l.Any(i => i.IsUnique)),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => createOrder.Add("unique"))
+            .Returns(Task.CompletedTask);
+
+        targetMock
+            .Setup(t => t.InsertManyAsync(
+                DbName, CollName,
+                It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => createOrder.Add("data"))
+            .ReturnsAsync(3L);
+
+        targetMock
+            .Setup(t => t.CreateIndexesAsync(
+                DbName, CollName,
+                It.Is<IReadOnlyList<IndexDefinition>>(l => l.All(i => !i.IsUnique)),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => createOrder.Add("non-unique"))
+            .Returns(Task.CompletedTask);
+
+        var engine = MakeEngine(storageMock, targetMock);
+        var result = await engine.RunAsync(MakeRequest(), [record], null, CancellationToken.None);
+
+        Assert.AreEqual(BackupStatus.Completed, result.Status);
+        Assert.AreEqual(3, createOrder.Count, "Expected unique → data → non-unique calls");
+        Assert.AreEqual("unique",     createOrder[0], "Unique indexes must be created first");
+        Assert.AreEqual("data",       createOrder[1], "Data load must follow unique index creation");
+        Assert.AreEqual("non-unique", createOrder[2], "Non-unique indexes must be created last");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_ExistingCollection_SkipsUniqueIndexCreation()
+    {
+        // Arrange — collection already exists (simulates incremental on known collection).
+        var uniqueSpec = System.Text.Json.JsonDocument.Parse(
+            """{"key":{"email":1},"name":"email_1","unique":true}""").RootElement.Clone();
+
+        var record = MakeFullBackupRecord();
+        record.Collections[0].Indexes =
+        [
+            new IndexDefinition { Name = "email_1", IsUnique = true, Spec = uniqueSpec }
+        ];
+
+        var blobBytes   = BuildBlobBytes(2);
+        var storageMock = new Mock<IStorageConnector>();
+        var targetMock  = MakeTargetMock();
+
+        // Collection exists — unique index creation must be skipped.
+        targetMock
+            .Setup(t => t.CollectionExistsAsync(DbName, CollName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        storageMock
+            .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(blobBytes));
+
+        targetMock
+            .Setup(t => t.InsertManyAsync(
+                DbName, CollName,
+                It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2L);
+
+        var engine = MakeEngine(storageMock, targetMock);
+        var result = await engine.RunAsync(MakeRequest(), [record], null, CancellationToken.None);
+
+        Assert.AreEqual(BackupStatus.Completed, result.Status);
+
+        // Unique index CreateIndexesAsync must NOT have been called.
+        targetMock.Verify(
+            t => t.CreateIndexesAsync(
+                DbName, CollName,
+                It.Is<IReadOnlyList<IndexDefinition>>(l => l.Any(i => i.IsUnique)),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "Unique index creation must be skipped for existing collections");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_MultiStepChain_NonUniqueIndexCreatedOnlyAfterLastStep()
+    {
+        const string incrBlobPath = "incremental/2025/Q1/backup-id/2025-01-02/test-db.patients.part-001.bson.gz";
+        var fullBlob = BuildBlobBytes(5);
+        var incrBlob = BuildBlobBytes(2);
+
+        var nonUniqueSpec = System.Text.Json.JsonDocument.Parse(
+            """{"key":{"createdAt":-1},"name":"createdAt_-1"}""").RootElement.Clone();
+
+        var fullRecord = MakeFullBackupRecord(totalDocs: 5);
+        fullRecord.Collections[0].Indexes =
+        [
+            new IndexDefinition { Name = "createdAt_-1", IsUnique = false, Spec = nonUniqueSpec }
+        ];
+
+        var incrRecord = new BackupRecord
+        {
+            BackupId     = "incr-id",
+            BackupType   = BackupType.Incremental,
+            BackupFolder = "incremental/2025/Q1/backup-id/2025-01-02",
+            DatabaseName = DbName,
+            AnchorTs     = 1_700_086_400L,
+            QuarterLabel = "2025-Q1",
+            Collections  =
+            [
+                new CollectionBackupRecord
+                {
+                    CollectionName = CollName,
+                    TotalDocuments = 2,
+                    ChunkCount     = 1,
+                    Chunks = [new ChunkRecord { ChunkIndex = 1, BlobPath = incrBlobPath,
+                        DocumentCount = 2, Sha256Hash = "xyz", SizeBytes = 256 }],
+                    // Incremental captures same index set
+                    Indexes = [new IndexDefinition { Name = "createdAt_-1", IsUnique = false, Spec = nonUniqueSpec }]
+                }
+            ]
+        };
+
+        var storageMock = new Mock<IStorageConnector>();
+        var targetMock  = MakeTargetMock();
+
+        storageMock.Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(fullBlob));
+        storageMock.Setup(s => s.OpenReadAsync(incrBlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(incrBlob));
+
+        targetMock.Setup(t => t.InsertManyAsync(It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(5L);
+        targetMock.Setup(t => t.UpsertManyAsync(It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2L);
+
+        // Incremental step: collection already exists
+        targetMock.SetupSequence(t => t.CollectionExistsAsync(
+                DbName, CollName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false)  // full step: not yet created
+            .ReturnsAsync(true);  // incremental step: already there
+
+        var engine = MakeEngine(storageMock, targetMock);
+        var result = await engine.RunAsync(MakeRequest(), [fullRecord, incrRecord], null, CancellationToken.None);
+
+        Assert.AreEqual(BackupStatus.Completed, result.Status);
+
+        // Non-unique CreateIndexesAsync should be called exactly once (after the last step).
+        targetMock.Verify(
+            t => t.CreateIndexesAsync(
+                DbName, CollName,
+                It.Is<IReadOnlyList<IndexDefinition>>(l => l.All(i => !i.IsUnique)),
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "Non-unique indexes must be created exactly once, after the last chain step");
     }
 
     // ------------------------------------------------------------------ //
