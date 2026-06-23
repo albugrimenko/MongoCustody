@@ -24,21 +24,15 @@ namespace MongoCustody.Core.Engines;
 ///   <item><see cref="ValidationLevel.IncrementalCompleteness"/> — applies to
 ///         incremental backups only. Verifies the backed-up document count is ≥ the
 ///         count of live documents modified since the previous anchor.</item>
-///   <item><see cref="ValidationLevel.RestoreDryRun"/> — restores the backup to the
-///         ephemeral target specified in
-///         <see cref="ValidationRequest.DryRunTargetConnectionString"/> and
-///         compares per-collection document counts against the manifest.
-///         Requires <see cref="IRestoreTargetConnectorFactory"/> to be wired in.</item>
 /// </list>
 /// </para>
 /// </summary>
 internal sealed class ValidationEngine
 {
-    private readonly IBackupSourceConnector        _source;
-    private readonly IStorageConnector             _storage;
-    private readonly IMetadataRepository           _metadata;
-    private readonly MongoCustodyConfiguration     _config;
-    private readonly IRestoreTargetConnectorFactory? _restoreTargetFactory;
+    private readonly IBackupSourceConnector    _source;
+    private readonly IStorageConnector         _storage;
+    private readonly IMetadataRepository       _metadata;
+    private readonly MongoCustodyConfiguration _config;
 
     // Tolerance for Level 2 count comparison on large collections (0.01 %)
     private const double CountToleranceFraction = 0.0001;
@@ -50,17 +44,15 @@ internal sealed class ValidationEngine
     private const int ReadBufferSize = 81_920;
 
     internal ValidationEngine(
-        IBackupSourceConnector          source,
-        IStorageConnector               storage,
-        IMetadataRepository             metadata,
-        MongoCustodyConfiguration       config,
-        IRestoreTargetConnectorFactory? restoreTargetFactory = null)
+        IBackupSourceConnector    source,
+        IStorageConnector         storage,
+        IMetadataRepository       metadata,
+        MongoCustodyConfiguration config)
     {
-        _source               = source;
-        _storage              = storage;
-        _metadata             = metadata;
-        _config               = config;
-        _restoreTargetFactory = restoreTargetFactory;
+        _source   = source;
+        _storage  = storage;
+        _metadata = metadata;
+        _config   = config;
     }
 
     /// <summary>
@@ -71,15 +63,6 @@ internal sealed class ValidationEngine
         ValidationRequest request,
         CancellationToken ct)
     {
-        // Guard: L4 requires the factory to be wired.
-        if ((request.Levels & ValidationLevel.RestoreDryRun) != 0
-            && _restoreTargetFactory is null)
-        {
-            throw new NotImplementedException(
-                "Level 4 (Restore Dry-Run) requires IRestoreTargetConnectorFactory to be " +
-                "registered. Ensure MongoCustody.Connectors is wired into the DI container.");
-        }
-
         var record = await _metadata
             .GetBackupRecordAsync(request.BackupId, ct)
             .ConfigureAwait(false);
@@ -95,33 +78,14 @@ internal sealed class ValidationEngine
             };
         }
 
-        // Phase A — per-collection L1 / L2 / L3
         var collectionResults = new List<CollectionValidationResult>(record.Collections.Count);
-        var nonDryRunLevels   = request.Levels & ~ValidationLevel.RestoreDryRun;
 
-        if (nonDryRunLevels != ValidationLevel.None)
+        foreach (var collRecord in record.Collections)
         {
-            foreach (var collRecord in record.Collections)
-            {
-                var result = await ValidateCollectionAsync(
-                    record, collRecord, nonDryRunLevels, ct)
-                    .ConfigureAwait(false);
-                collectionResults.Add(result);
-            }
-        }
-
-        // Phase B — L4 restore dry-run (runs after L1/L2/L3 so hash failures
-        // are visible before wasting a full restore)
-        if ((request.Levels & ValidationLevel.RestoreDryRun) != 0)
-        {
-            if (string.IsNullOrWhiteSpace(request.DryRunTargetConnectionString))
-                throw new ArgumentException(
-                    "DryRunTargetConnectionString is required for Level 4 (Restore Dry-Run) validation.",
-                    nameof(request));
-
-            await RunRestoreDryRunAsync(
-                record, request.DryRunTargetConnectionString!, collectionResults, ct)
+            var result = await ValidateCollectionAsync(
+                record, collRecord, request.Levels, ct)
                 .ConfigureAwait(false);
+            collectionResults.Add(result);
         }
 
         return new ValidationResult
@@ -364,116 +328,4 @@ internal sealed class ValidationEngine
               $"manifest={manifestCount}, live changed={liveChangedCount}");
     }
 
-    // ------------------------------------------------------------------ //
-    //  Level 4 — Restore Dry-Run
-    // ------------------------------------------------------------------ //
-
-    /// <summary>
-    /// Restores the backup to the ephemeral target and verifies per-collection
-    /// document counts against the manifest. Results are merged into
-    /// <paramref name="collectionResults"/> (adding new entries or annotating
-    /// existing ones from L1/L2/L3).
-    /// </summary>
-    private async Task RunRestoreDryRunAsync(
-        BackupRecord                    record,
-        string                          targetConnectionString,
-        List<CollectionValidationResult> collectionResults,
-        CancellationToken               ct)
-    {
-        await using var target = _restoreTargetFactory!.Create(targetConnectionString);
-        var restoreEngine = new RestoreEngine(_storage, target, _config);
-
-        // Resolve the full chain so the dry-run applies the complete restore
-        // sequence rather than only the single record being validated.
-        var chain = await _metadata
-            .ResolveRestoreChainAsync(record.DatabaseName, record.CompletedAtUtc, ct)
-            .ConfigureAwait(false);
-
-        var restoreResult = await restoreEngine.RunAsync(
-            new RestoreRequest
-            {
-                DatabaseName           = record.DatabaseName,
-                TargetConnectionString = targetConnectionString,
-                RequestedBy            = "validation-dry-run",
-                ApprovedBy             = "validation-dry-run",
-                Reason                 = $"Level 4 dry-run for backup {record.BackupId}"
-            },
-            chain,
-            null,   // no progress reporting during validation dry-run
-            ct).ConfigureAwait(false);
-
-        if (restoreResult.Status != BackupStatus.Completed)
-        {
-            // Restore failed — mark every collection as failed for L4.
-            foreach (var coll in record.Collections)
-                AnnotateOrAddL4Result(
-                    collectionResults, coll.CollectionName, coll.TotalDocuments,
-                    liveCount: 0, passed: false,
-                    $"Restore dry-run failed: {restoreResult.FailureReason}");
-            return;
-        }
-
-        // Compare restored counts vs manifest counts.
-        foreach (var coll in record.Collections)
-        {
-            long restoredCount;
-            try
-            {
-                restoredCount = await target
-                    .CountDocumentsAsync(record.DatabaseName, coll.CollectionName, ct)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                AnnotateOrAddL4Result(
-                    collectionResults, coll.CollectionName, coll.TotalDocuments,
-                    liveCount: 0, passed: false,
-                    $"Failed to count restored documents: {ex.Message}");
-                continue;
-            }
-
-            bool passed = restoredCount == coll.TotalDocuments;
-            AnnotateOrAddL4Result(
-                collectionResults, coll.CollectionName, coll.TotalDocuments,
-                liveCount: restoredCount, passed,
-                passed ? null
-                    : $"Count mismatch after restore dry-run: " +
-                      $"manifest={coll.TotalDocuments}, restored={restoredCount}");
-        }
-    }
-
-    private static void AnnotateOrAddL4Result(
-        List<CollectionValidationResult> results,
-        string  collectionName,
-        long    manifestCount,
-        long    liveCount,
-        bool    passed,
-        string? failureDetail)
-    {
-        var existing = results.FirstOrDefault(r =>
-            string.Equals(r.CollectionName, collectionName, StringComparison.OrdinalIgnoreCase));
-
-        if (existing is not null)
-        {
-            existing.LiveDocumentCount = liveCount;
-            if (!passed)
-            {
-                existing.Passed        = false;
-                existing.FailedLevels |= ValidationLevel.RestoreDryRun;
-                existing.FailureDetail ??= failureDetail;
-            }
-        }
-        else
-        {
-            results.Add(new CollectionValidationResult
-            {
-                CollectionName        = collectionName,
-                ManifestDocumentCount = manifestCount,
-                LiveDocumentCount     = liveCount,
-                Passed                = passed,
-                FailedLevels          = passed ? ValidationLevel.None : ValidationLevel.RestoreDryRun,
-                FailureDetail         = failureDetail
-            });
-        }
-    }
 }

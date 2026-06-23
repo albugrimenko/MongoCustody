@@ -495,17 +495,10 @@ mongocustody validate backup \
   --backup-id a3f8c2d1 \
   --level structural count
 
-# L4 — full restore dry-run (requires an ephemeral target account)
-mongocustody validate backup \
-  --backup-id a3f8c2d1 \
-  --level dry-run \
-  --dry-run-connection-string "mongodb://ephemeral-account..."
-
 # All levels in one pass
 mongocustody validate backup \
   --backup-id a3f8c2d1 \
-  --level all \
-  --dry-run-connection-string "mongodb://ephemeral-account..."
+  --level all
 
 # Machine-readable output
 mongocustody validate backup --backup-id a3f8c2d1 --level structural --output json
@@ -516,9 +509,8 @@ mongocustody validate backup --backup-id a3f8c2d1 --level structural --output js
 | `structural` | `l1` | SHA-256 hash of each chunk matches manifest | No |
 | `count` | `l2` | Backup document count matches live DB count as of anchor | Yes |
 | `incremental` | `l3` | Incremental count ≥ changed documents in live DB since anchor | Yes |
-| `dry-run` | `l4` | Full restore to ephemeral target; verifies counts and spot-checks 100 documents | Yes (ephemeral) |
 
-Multiple levels can be passed as space-separated values (`--level structural count`) or comma-separated (`--level structural,count`). `--level all` runs all four levels and requires `--dry-run-connection-string`.
+Multiple levels can be passed as space-separated values (`--level structural count`) or comma-separated (`--level structural,count`). `--level all` runs all three levels.
 
 #### Validate restore chain
 
@@ -734,11 +726,6 @@ Run validation at any time via the library or CLI:
 # Validate structural integrity and count consistency
 mongocustody validate backup --backup-id a3f8c2d1 --level structural,count
 
-# Full restore dry-run (requires an ephemeral target account)
-mongocustody validate backup \
-  --backup-id a3f8c2d1 \
-  --level dry-run \
-  --dry-run-connection-string "mongodb://ephemeral-account..."
 ```
 
 ---
@@ -892,7 +879,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 2 | Connectors and health checks | ✅ Complete |
 | 3 | Full backup engine | ✅ Complete |
 | 4 | Validation engine (L1 structural integrity, L2 count consistency, L3 incremental completeness) | ✅ Complete |
-| 5 | Full backup restore engine (restore chain replay; L4 restore dry-run validation) | ✅ Complete |
+| 5 | Full backup restore engine (restore chain replay; dry-run validation via `validate dry-run`) | ✅ Complete |
 | 6 | Incremental backup engine | Planned |
 | 7 | Incremental restore and validation | Planned |
 | 8 | Checkpoint engine | Planned |

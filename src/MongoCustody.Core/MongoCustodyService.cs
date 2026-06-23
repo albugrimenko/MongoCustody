@@ -402,8 +402,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
         ValidationRequest request,
         CancellationToken ct = default)
     {
-        var engine = new ValidationEngine(
-            _source, _storage, _metadata, _config, _restoreTargetFactory);
+        var engine = new ValidationEngine(_source, _storage, _metadata, _config);
         return engine.ValidateAsync(request, ct);
     }
 

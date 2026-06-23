@@ -15,7 +15,7 @@ internal static class ValidateCommand
         return cmd;
     }
 
-    // validate backup --backup-id <id> [--level ...] [--dry-run-connection-string ...]
+    // validate backup --backup-id <id> [--level ...]
     private static Command BuildBackupSubcommand()
     {
         var configOpt   = CommonOptions.Config();
@@ -30,24 +30,16 @@ internal static class ValidateCommand
         var levelOpt = new Option<string[]>("--level", ["-l"])
         {
             Description =
-                "Validation level(s): structural (L1), count (L2), incremental (L3), dry-run (L4), all. " +
+                "Validation level(s): structural (L1), count (L2), incremental (L3), all. " +
                 "Defaults to structural.",
             AllowMultipleArgumentsPerToken = true,
             DefaultValueFactory = _ => ["structural"]
-        };
-
-        var dryRunConnOpt = new Option<string?>("--dry-run-connection-string")
-        {
-            Description =
-                "MongoDB connection string for the ephemeral restore target. " +
-                "Required when --level includes dry-run (L4)."
         };
 
         var cmd = new Command("backup", "Validate an existing backup at one or more verification levels.");
         cmd.Add(configOpt);
         cmd.Add(backupIdOpt);
         cmd.Add(levelOpt);
-        cmd.Add(dryRunConnOpt);
         cmd.Add(outputOpt);
 
         cmd.SetAction(async (parseResult, ct) =>
@@ -55,7 +47,6 @@ internal static class ValidateCommand
             var configPath   = parseResult.GetValue(configOpt)!;
             var backupId     = parseResult.GetValue(backupIdOpt)!;
             var levelStrings = parseResult.GetValue(levelOpt) ?? ["structural"];
-            var dryRunConn   = parseResult.GetValue(dryRunConnOpt);
             var format       = parseResult.GetValue(outputOpt);
 
             ValidationLevel levels;
@@ -63,14 +54,6 @@ internal static class ValidateCommand
             catch (ArgumentException ex)
             {
                 Console.Error.WriteLine($"Error: {ex.Message}");
-                return 2;
-            }
-
-            if (levels.HasFlag(ValidationLevel.RestoreDryRun) &&
-                string.IsNullOrWhiteSpace(dryRunConn))
-            {
-                Console.Error.WriteLine(
-                    "Error: --dry-run-connection-string is required when --level includes dry-run (L4).");
                 return 2;
             }
 
@@ -83,9 +66,8 @@ internal static class ValidateCommand
             var result = await svc.ValidateBackupAsync(
                 new ValidationRequest
                 {
-                    BackupId                    = backupId,
-                    Levels                      = levels,
-                    DryRunTargetConnectionString = dryRunConn
+                    BackupId = backupId,
+                    Levels   = levels
                 }, ct);
 
             if (format == OutputFormat.Json)
@@ -426,14 +408,12 @@ internal static class ValidateCommand
                     "structural"  or "l1" => ValidationLevel.StructuralIntegrity,
                     "count"       or "l2" => ValidationLevel.CountConsistency,
                     "incremental" or "l3" => ValidationLevel.IncrementalCompleteness,
-                    "dry-run"     or "l4" => ValidationLevel.RestoreDryRun,
                     "all"                 => ValidationLevel.StructuralIntegrity |
                                             ValidationLevel.CountConsistency |
-                                            ValidationLevel.IncrementalCompleteness |
-                                            ValidationLevel.RestoreDryRun,
+                                            ValidationLevel.IncrementalCompleteness,
                     _ => throw new ArgumentException(
                         $"Unknown validation level '{token}'. " +
-                        $"Valid values: structural, count, incremental, dry-run, all (or l1–l4).")
+                        $"Valid values: structural, count, incremental, all (or l1–l3).")
                 };
             }
         }

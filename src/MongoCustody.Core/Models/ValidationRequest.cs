@@ -17,10 +17,4 @@ public sealed class ValidationRequest
     /// </summary>
     public ValidationLevel Levels { get; set; } = ValidationLevel.StructuralIntegrity;
 
-    /// <summary>
-    /// MongoDB connection string for the ephemeral restore account.
-    /// Required only when <see cref="Levels"/> includes
-    /// <see cref="ValidationLevel.RestoreDryRun"/>.
-    /// </summary>
-    public string? DryRunTargetConnectionString { get; set; }
 }

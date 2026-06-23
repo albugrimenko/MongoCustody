@@ -35,13 +35,5 @@ public enum ValidationLevel
     /// documents modified in the live database since the previous anchor.
     /// Runs automatically after every incremental backup.
     /// </summary>
-    IncrementalCompleteness = 1 << 2,
-
-    /// <summary>
-    /// Level 4 — Restore Dry-Run.
-    /// Full restore to an ephemeral account; verifies counts and
-    /// spot-checks 100 random documents without promoting to production.
-    /// Runs quarterly or on demand.
-    /// </summary>
-    RestoreDryRun = 1 << 3
+    IncrementalCompleteness = 1 << 2
 }
