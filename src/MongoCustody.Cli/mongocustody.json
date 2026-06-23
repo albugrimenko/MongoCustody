@@ -4,8 +4,7 @@
     {
       "databaseName": "TEST",
       "excludedCollections": [],
-      "timestampAttribute": "_ts",
-      "deletedAttribute": "isDeleted"
+      "timestampAttribute": "_ts"
     }
   ],
   "policy": {

@@ -170,8 +170,7 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a `mongocu
     {
       "databaseName": "your-database",
       "excludedCollections": ["_sessions", "_changelog"],
-      "timestampAttribute": "_ts",
-      "deletedAttribute": "isDeleted"
+      "timestampAttribute": "_ts"
     }
   ],
   "policy": {
@@ -237,14 +236,13 @@ export MONGOCUSTODY_KEYVAULT_URI="https://your-keyvault.vault.azure.net/"
 
 ### Per-database field name overrides
 
-If your collections use different field names for the timestamp or soft-delete flag, override them per database:
+If your collections use a different field name for the timestamp, override it per database:
 
 ```json
 "databases": [
   {
     "databaseName": "legacy-db",
-    "timestampAttribute": "updatedTs",
-    "deletedAttribute": "delete_flag"
+    "timestampAttribute": "updatedTs"
   }
 ]
 ```
@@ -252,7 +250,6 @@ If your collections use different field names for the timestamp or soft-delete f
 | Field | Default | Purpose |
 |---|---|---|
 | `timestampAttribute` | `_ts` | Unix-second timestamp field used for incremental change detection |
-| `deletedAttribute` | `isDeleted` | Boolean soft-delete flag used during validation |
 
 ---
 

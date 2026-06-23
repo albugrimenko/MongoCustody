@@ -26,12 +26,4 @@ public sealed class DatabaseConfiguration
     /// </summary>
     public string TimestampAttribute { get; set; } = "_ts";
 
-    /// <summary>
-    /// Name of the document field that indicates soft deletion.
-    /// MongoCustody uses this boolean field to distinguish live documents
-    /// from soft-deleted ones during validation.
-    /// Override when your collections use a different field name (e.g. <c>"delete_flag"</c>).
-    /// Default: <c>"isDeleted"</c>.
-    /// </summary>
-    public string DeletedAttribute { get; set; } = "isDeleted";
 }

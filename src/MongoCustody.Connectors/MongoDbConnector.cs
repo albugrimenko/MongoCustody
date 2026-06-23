@@ -156,19 +156,8 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var collection = await GetCollectionAsync(databaseName, collectionName, ct)
             .ConfigureAwait(false);
 
-        // Counts live documents modified after anchorTs — used for Level 3
-        // (Incremental Completeness) validation: how many documents changed
-        // since the last anchor and still exist (i.e. were not soft-deleted).
-        var dbCfg = GetDatabaseConfig(databaseName);
-        var notDeleted = Builders<BsonDocument>.Filter.Or(
-            Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists(dbCfg.DeletedAttribute)),
-            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, false)
-        );
-
-        var filter = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, anchorTs),
-            notDeleted);
+        var dbCfg  = GetDatabaseConfig(databaseName);
+        var filter = Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, anchorTs);
 
         return await collection
             .CountDocumentsAsync(filter, cancellationToken: ct)
@@ -185,26 +174,8 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var collection = await GetCollectionAsync(databaseName, collectionName, ct)
             .ConfigureAwait(false);
 
-        // Counts documents that existed at anchorTs — used for Level 2
-        // (Count Consistency) validation: documents never soft-deleted, OR
-        // documents soft-deleted AFTER the backup's anchor timestamp (they
-        // were still present in the collection when the snapshot was taken).
-        var dbCfg = GetDatabaseConfig(databaseName);
-        var notDeleted = Builders<BsonDocument>.Filter.Or(
-            Builders<BsonDocument>.Filter.Not(
-                Builders<BsonDocument>.Filter.Exists(dbCfg.DeletedAttribute)),
-            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, false)
-        );
-
-        var deletedAfterAnchor = Builders<BsonDocument>.Filter.And(
-            Builders<BsonDocument>.Filter.Eq(dbCfg.DeletedAttribute, true),
-            Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, anchorTs)
-        );
-
-        var filter = Builders<BsonDocument>.Filter.Or(notDeleted, deletedAfterAnchor);
-
         return await collection
-            .CountDocumentsAsync(filter, cancellationToken: ct)
+            .CountDocumentsAsync(Builders<BsonDocument>.Filter.Empty, cancellationToken: ct)
             .ConfigureAwait(false);
     }
 
