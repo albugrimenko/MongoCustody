@@ -38,6 +38,23 @@ public sealed class MongoCustodyConfiguration
     /// connection string is required on the command line.
     /// </summary>
     public DryRunConfiguration? DryRun { get; set; }
+
+    /// <summary>
+    /// Optional configuration for audit report generation.
+    /// </summary>
+    public ReportConfiguration? Report { get; set; }
+}
+
+/// <summary>
+/// Configuration for audit report generation.
+/// </summary>
+public sealed class ReportConfiguration
+{
+    /// <summary>
+    /// Directory where audit report files are written when <c>--output-file</c>
+    /// is not specified on the command line. Must be an absolute path.
+    /// </summary>
+    public string DefaultOutputDirectory { get; set; } = string.Empty;
 }
 
 /// <summary>

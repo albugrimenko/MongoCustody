@@ -25,12 +25,16 @@ internal sealed class CliConfiguration
     [JsonPropertyName("dryRun")]
     public DryRunConfiguration? DryRun { get; set; }
 
+    [JsonPropertyName("report")]
+    public ReportConfiguration? Report { get; set; }
+
     internal MongoCustodyConfiguration ToCore() => new()
     {
         StorageContainerName = StorageContainerName,
         Databases            = Databases,
         Policy               = Policy,
         Secrets              = Secrets,
-        DryRun               = DryRun
+        DryRun               = DryRun,
+        Report               = Report
     };
 }

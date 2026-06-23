@@ -594,11 +594,16 @@ If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an
   "dryRun": {
     "connectionStringKey": "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING",
     "databaseName": "mongocustody-dry-run"
+  },
+  "report": {
+    "defaultOutputDirectory": "/var/log/mongocustody/reports"
   }
 }
 ```
 
 `connectionStringKey` follows the same convention as `mongoConnectionStringKey` and `storageConnectionStringKey` — it is the environment variable name (or Key Vault secret name) that holds the actual connection string, never the connection string itself.
+
+`report.defaultOutputDirectory` sets the directory where auto-named report files are written when `--output-file` is not specified on the `report generate` command.
 
 > **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`.
 
@@ -625,10 +630,14 @@ mongocustody report generate \
   --generated-by "Jane Smith, Compliance Officer"
 ```
 
-The `--output-file` path is optional. When omitted, a filename is automatically
-generated:
+`--output-file` accepts a full path to the output file. When omitted, an
+auto-generated filename is written to the directory configured via
+`report.defaultOutputDirectory` in the config file:
 - Range mode: `mongocustody-audit-{from:yyyy-MM-dd}_{to:yyyy-MM-dd}.md`
 - Single-restore mode: `mongocustody-restore-{first-8-chars-of-id}.md`
+
+If neither `--output-file` nor `report.defaultOutputDirectory` is set, the
+command exits with an error.
 
 A brief summary is always printed to stdout; the full Markdown report is written
 to the file. Example stdout output:

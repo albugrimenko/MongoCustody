@@ -42,7 +42,10 @@ internal static class ReportCommand
 
         var outputFileOpt = new Option<string?>("--output-file", ["-o"])
         {
-            Description = "Path for the output Markdown file. Defaults to an auto-generated filename."
+            Description =
+                "Full path for the output Markdown file. " +
+                "If omitted, an auto-generated filename is placed in the directory " +
+                "configured via report.defaultOutputDirectory in the config file."
         };
 
         var generatedByOpt = new Option<string?>("--generated-by")
@@ -92,6 +95,10 @@ internal static class ReportCommand
                 return 1;
             }
 
+            MongoCustody.Core.Models.MongoCustodyConfiguration config;
+            try { config = ServiceFactory.LoadConfig(configPath ?? string.Empty); }
+            catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
+
             var svc = ServiceFactory.Build(configPath ?? string.Empty);
 
             var request = new AuditReportRequest
@@ -114,12 +121,23 @@ internal static class ReportCommand
                 return 1;
             }
 
-            // Determine output filename
+            // Determine output path: CLI arg → config directory + auto filename → error
             if (string.IsNullOrWhiteSpace(outputFile))
             {
-                outputFile = isSingleMode
+                var dir = config.Report?.DefaultOutputDirectory;
+                if (string.IsNullOrWhiteSpace(dir))
+                {
+                    Console.Error.WriteLine(
+                        "Error: --output-file is required, or set report.defaultOutputDirectory " +
+                        "in the config file.");
+                    return 1;
+                }
+
+                var filename = isSingleMode
                     ? $"mongocustody-restore-{restoreId![..Math.Min(8, restoreId!.Length)]}.md"
                     : $"mongocustody-audit-{from!.Value:yyyy-MM-dd}_{to!.Value:yyyy-MM-dd}.md";
+
+                outputFile = Path.Combine(dir, filename);
             }
 
             var markdown = MarkdownReportRenderer.Render(report);
