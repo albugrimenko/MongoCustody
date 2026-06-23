@@ -75,7 +75,44 @@ internal sealed class ValidationEngine
                 LevelsExecuted    = ValidationLevel.None,
                 CompletedAtUtc    = DateTimeOffset.UtcNow,
                 CollectionResults = []
+                // BackupType left at default (Full); Passed=false because Count=0 and type=Full
             };
+        }
+
+        return await ValidateRecordAsync(record, request.Levels, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Validates a pre-resolved <paramref name="record"/> without a metadata
+    /// lookup. Used by the chain validation path to avoid reading each record twice.
+    /// </summary>
+    internal Task<ValidationResult> ValidateAsync(
+        BackupRecord      record,
+        ValidationLevel   levels,
+        CancellationToken ct)
+        => ValidateRecordAsync(record, levels, ct);
+
+    private async Task<ValidationResult> ValidateRecordAsync(
+        BackupRecord      record,
+        ValidationLevel   levels,
+        CancellationToken ct)
+    {
+        // Manifest coherence check — incremental records only.
+        if (record.BackupType == BackupType.Incremental)
+        {
+            var (coherent, detail) = await CheckManifestCoherenceAsync(record, ct)
+                .ConfigureAwait(false);
+
+            if (!coherent)
+                return new ValidationResult
+                {
+                    BackupId                = record.BackupId,
+                    BackupType              = record.BackupType,
+                    LevelsExecuted          = levels,
+                    CompletedAtUtc          = DateTimeOffset.UtcNow,
+                    ManifestCoherenceDetail = detail,
+                    CollectionResults       = []
+                };
         }
 
         var collectionResults = new List<CollectionValidationResult>(record.Collections.Count);
@@ -83,15 +120,16 @@ internal sealed class ValidationEngine
         foreach (var collRecord in record.Collections)
         {
             var result = await ValidateCollectionAsync(
-                record, collRecord, request.Levels, ct)
+                record, collRecord, levels, ct)
                 .ConfigureAwait(false);
             collectionResults.Add(result);
         }
 
         return new ValidationResult
         {
-            BackupId          = request.BackupId,
-            LevelsExecuted    = request.Levels,
+            BackupId          = record.BackupId,
+            BackupType        = record.BackupType,
+            LevelsExecuted    = levels,
             CompletedAtUtc    = DateTimeOffset.UtcNow,
             CollectionResults = collectionResults
         };
@@ -294,6 +332,39 @@ internal sealed class ValidationEngine
         return (passed, liveCount, passed ? string.Empty
             : $"Count mismatch exceeds tolerance: manifest={manifestCount}, " +
               $"live={liveCount}, diff={diff}, tolerance={tolerance}");
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Manifest Coherence — incremental records only
+    // ------------------------------------------------------------------ //
+
+    private async Task<(bool Passed, string Detail)> CheckManifestCoherenceAsync(
+        BackupRecord      record,
+        CancellationToken ct)
+    {
+        if (record.QueryFromTs is null)
+            return (false,
+                "Incremental manifest is missing QueryFromTs — the backup record is incomplete.");
+
+        if (string.IsNullOrWhiteSpace(record.ParentFolder))
+            return (false,
+                "Incremental manifest is missing ParentFolder — the chain link is broken.");
+
+        if (record.AnchorTs <= record.QueryFromTs.Value)
+            return (false,
+                $"Manifest timestamps are invalid: AnchorTs ({record.AnchorTs}) " +
+                $"must be greater than QueryFromTs ({record.QueryFromTs.Value}).");
+
+        var parentRecord = await _metadata
+            .GetBackupRecordByFolderAsync(record.ParentFolder, ct)
+            .ConfigureAwait(false);
+
+        if (parentRecord is null)
+            return (false,
+                $"Parent backup '{record.ParentFolder}' has no manifest — " +
+                "the restore chain may be broken or the parent backup failed.");
+
+        return (true, string.Empty);
     }
 
     // ------------------------------------------------------------------ //

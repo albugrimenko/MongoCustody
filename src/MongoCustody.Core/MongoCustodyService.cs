@@ -17,8 +17,8 @@ namespace MongoCustody.Core;
 ///   <item>Phase 3 — Full backup engine ✅ (<see cref="RunFullBackupAsync"/>)</item>
 ///   <item>Phase 4 — Validation engine ✅ (<see cref="ValidateBackupAsync"/>)</item>
 ///   <item>Phase 5 — Restore engine ✅ (<see cref="RestoreAsync"/>)</item>
-///   <item>Phase 6 — Incremental backup engine — Planned</item>
-///   <item>Phase 7 — Incremental restore and validation — Planned</item>
+///   <item>Phase 6 — Incremental backup engine ✅ (<see cref="RunIncrementalBackupAsync"/>)</item>
+///   <item>Phase 7 — Incremental restore and validation ✅ (<see cref="ValidateRestoreChainAsync"/>)</item>
 ///   <item>Phase 8 — Checkpoint engine — Planned</item>
 /// </list>
 /// </summary>
@@ -397,7 +397,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
     }
 
     // ------------------------------------------------------------------ //
-    //  Phase 4 — Validation (not yet implemented)
+    //  Phase 4 — Validation
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
@@ -407,6 +407,50 @@ public sealed class MongoCustodyService : IMongoCustodyService
     {
         var engine = new ValidationEngine(_source, _storage, _metadata, _config);
         return engine.ValidateAsync(request, ct);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Phase 7 — Chain validation
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public async Task<Models.ChainValidationResult> ValidateRestoreChainAsync(
+        string databaseName,
+        DateTimeOffset targetDate,
+        ValidationLevel levels,
+        CancellationToken ct = default)
+    {
+        var chain = await _metadata
+            .ResolveRestoreChainAsync(databaseName, targetDate, ct)
+            .ConfigureAwait(false);
+
+        var engine = new ValidationEngine(_source, _storage, _metadata, _config);
+        var steps  = new List<Models.ChainStepValidationResult>(chain.Count);
+
+        for (int i = 0; i < chain.Count; i++)
+        {
+            var record     = chain[i];
+            var validation = await engine
+                .ValidateAsync(record, levels, ct)
+                .ConfigureAwait(false);
+
+            steps.Add(new Models.ChainStepValidationResult
+            {
+                StepIndex      = i + 1,
+                BackupType     = record.BackupType,
+                BackupId       = record.BackupId,
+                BackupFolder   = record.BackupFolder,
+                CompletedAtUtc = record.CompletedAtUtc,
+                Validation     = validation
+            });
+        }
+
+        return new Models.ChainValidationResult
+        {
+            DatabaseName  = databaseName,
+            RequestedDate = targetDate,
+            Steps         = steps
+        };
     }
 
     // ------------------------------------------------------------------ //

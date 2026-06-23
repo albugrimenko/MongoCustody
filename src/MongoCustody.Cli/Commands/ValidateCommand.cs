@@ -118,7 +118,7 @@ internal static class ValidateCommand
         return cmd;
     }
 
-    // validate chain --database <db> [--date <iso>]
+    // validate chain --database <db> [--date <iso>] [--validate] [--level ...]
     private static Command BuildChainSubcommand()
     {
         var configOpt   = CommonOptions.Config();
@@ -131,69 +131,176 @@ internal static class ValidateCommand
                 "Target restore point (ISO 8601). Defaults to now — shows the latest restorable point."
         };
 
+        var validateOpt = new Option<bool>("--validate", ["-v"])
+        {
+            Description =
+                "Run validation on every step in the resolved chain. " +
+                "When omitted the command shows the chain preview only."
+        };
+
+        var levelOpt = new Option<string[]>("--level", ["-l"])
+        {
+            Description =
+                "Validation level(s) when --validate is set: structural (L1), count (L2), " +
+                "incremental (L3), all. Defaults to structural.",
+            AllowMultipleArgumentsPerToken = true,
+            DefaultValueFactory = _ => ["structural"]
+        };
+
         var cmd = new Command("chain",
             "Show the restore chain that would be applied for a given database and date. " +
-            "Read-only — no data is written.");
+            "Optionally validate every step with --validate. Read-only — no data is written.");
         cmd.Add(configOpt);
         cmd.Add(databaseOpt);
         cmd.Add(dateOpt);
+        cmd.Add(validateOpt);
+        cmd.Add(levelOpt);
         cmd.Add(outputOpt);
 
         cmd.SetAction(async (parseResult, ct) =>
         {
-            var configPath = parseResult.GetValue(configOpt)!;
-            var database   = parseResult.GetValue(databaseOpt)!;
-            var date       = parseResult.GetValue(dateOpt) ?? DateTimeOffset.UtcNow;
-            var format     = parseResult.GetValue(outputOpt);
+            var configPath   = parseResult.GetValue(configOpt)!;
+            var database     = parseResult.GetValue(databaseOpt)!;
+            var date         = parseResult.GetValue(dateOpt) ?? DateTimeOffset.UtcNow;
+            var doValidate   = parseResult.GetValue(validateOpt);
+            var levelStrings = parseResult.GetValue(levelOpt) ?? ["structural"];
+            var format       = parseResult.GetValue(outputOpt);
 
             IMongoCustodyService svc;
             try { svc = ServiceFactory.Build(configPath); }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
-            RestoreChainPreview preview;
-            try { preview = await svc.PreviewRestoreChainAsync(database, date, ct); }
-            catch (Exception ex)
+            // ---- Preview-only path ----
+            if (!doValidate)
             {
-                Console.Error.WriteLine($"Error: {ex.Message}");
-                return 1;
+                RestoreChainPreview preview;
+                try { preview = await svc.PreviewRestoreChainAsync(database, date, ct); }
+                catch (Exception ex) { Console.Error.WriteLine($"Error: {ex.Message}"); return 1; }
+
+                if (format == OutputFormat.Json)
+                {
+                    Output.WriteJson(new
+                    {
+                        database          = preview.DatabaseName,
+                        requestedDate     = preview.RequestedDate,
+                        bestAvailableDate = preview.BestAvailableDate,
+                        gapWarning        = preview.GapWarning,
+                        chain             = preview.Chain.Select((r, i) => new
+                        {
+                            step        = i + 1,
+                            type        = r.BackupType.ToString(),
+                            completedAt = r.CompletedAtUtc,
+                            folder      = r.BackupFolder,
+                            backupId    = r.BackupId
+                        })
+                    });
+                }
+                else
+                {
+                    if (preview.Chain.Count == 0)
+                    {
+                        Console.WriteLine($"No backup found for '{database}' on or before {date:u}.");
+                        return 1;
+                    }
+
+                    RestoreCommand.PrintChainPreview(preview, format);
+
+                    if (preview.GapWarning is not null)
+                    {
+                        Console.WriteLine();
+                        Console.WriteLine($"WARNING: {preview.GapWarning}");
+                    }
+                }
+
+                return preview.Chain.Count > 0 ? 0 : 1;
             }
+
+            // ---- Validation path ----
+            ValidationLevel levels;
+            try { levels = ParseLevels(levelStrings); }
+            catch (ArgumentException ex) { Console.Error.WriteLine($"Error: {ex.Message}"); return 2; }
+
+            Console.Error.WriteLine(
+                $"Validating restore chain for '{database}' as of {date:u} at level(s): {levels}…");
+
+            ChainValidationResult chainResult;
+            try { chainResult = await svc.ValidateRestoreChainAsync(database, date, levels, ct); }
+            catch (Exception ex) { Console.Error.WriteLine($"Error: {ex.Message}"); return 1; }
 
             if (format == OutputFormat.Json)
             {
                 Output.WriteJson(new
                 {
-                    database         = preview.DatabaseName,
-                    requestedDate    = preview.RequestedDate,
-                    bestAvailableDate = preview.BestAvailableDate,
-                    gapWarning       = preview.GapWarning,
-                    chain            = preview.Chain.Select((r, i) => new
+                    database      = chainResult.DatabaseName,
+                    requestedDate = chainResult.RequestedDate,
+                    passed        = chainResult.Passed,
+                    steps         = chainResult.Steps.Select(s => new
                     {
-                        step        = i + 1,
-                        type        = r.BackupType.ToString(),
-                        completedAt = r.CompletedAtUtc,
-                        folder      = r.BackupFolder,
-                        backupId    = r.BackupId
+                        step            = s.StepIndex,
+                        type            = s.BackupType.ToString(),
+                        backupId        = s.BackupId,
+                        folder          = s.BackupFolder,
+                        completedAt     = s.CompletedAtUtc,
+                        passed          = s.Validation.Passed,
+                        levelsExecuted  = s.Validation.LevelsExecuted.ToString(),
+                        coherenceDetail = s.Validation.ManifestCoherenceDetail,
+                        collections     = s.Validation.CollectionResults.Select(c => new
+                        {
+                            collection        = c.CollectionName,
+                            passed            = c.Passed,
+                            failedLevels      = c.FailedLevels == ValidationLevel.None ? null : c.FailedLevels.ToString(),
+                            failureDetail     = c.FailureDetail,
+                            manifestDocuments = c.ManifestDocumentCount,
+                            liveDocuments     = c.LiveDocumentCount
+                        })
                     })
                 });
             }
             else
             {
-                if (preview.Chain.Count == 0)
+                if (chainResult.Steps.Count == 0)
                 {
-                    Console.WriteLine($"No backup found for '{database}' on or before {date:u}.");
+                    Console.WriteLine($"No backup chain found for '{database}' on or before {date:u}.");
                     return 1;
                 }
 
-                RestoreCommand.PrintChainPreview(preview, format);
+                Output.WriteSeparator();
+                Console.WriteLine($"Database   : {chainResult.DatabaseName}");
+                Console.WriteLine($"Date       : {chainResult.RequestedDate:u}");
+                Console.WriteLine($"Result     : {(chainResult.Passed ? "PASSED" : "FAILED")}");
+                Console.WriteLine($"Steps      : {chainResult.Steps.Count}");
+                Console.WriteLine();
 
-                if (preview.GapWarning is not null)
+                foreach (var step in chainResult.Steps)
                 {
-                    Console.WriteLine();
-                    Console.WriteLine($"WARNING: {preview.GapWarning}");
+                    var stepIcon = step.Validation.Passed ? "✓" : "✗";
+                    Console.WriteLine(
+                        $"  {stepIcon} Step {step.StepIndex}: [{step.BackupType,-12}] " +
+                        $"{step.BackupId}  ({step.CompletedAtUtc:u})");
+
+                    if (step.Validation.ManifestCoherenceDetail is not null)
+                    {
+                        Console.WriteLine(
+                            $"       COHERENCE FAILURE: {step.Validation.ManifestCoherenceDetail}");
+                    }
+
+                    foreach (var col in step.Validation.CollectionResults)
+                    {
+                        var colIcon = col.Passed ? "✓" : "✗";
+                        Console.WriteLine(
+                            $"       {colIcon}  {col.CollectionName,-40} " +
+                            $"manifest: {col.ManifestDocumentCount,10:N0} docs" +
+                            (col.LiveDocumentCount.HasValue
+                                ? $"  live: {col.LiveDocumentCount.Value,10:N0} docs"
+                                : string.Empty));
+                        if (col.FailureDetail is not null)
+                            Console.WriteLine($"            {col.FailureDetail}");
+                    }
                 }
+                Output.WriteSeparator();
             }
 
-            return preview.Chain.Count > 0 ? 0 : 1;
+            return chainResult.Passed ? 0 : 1;
         });
 
         return cmd;

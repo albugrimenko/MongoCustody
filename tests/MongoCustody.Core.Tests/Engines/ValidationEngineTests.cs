@@ -47,13 +47,28 @@ public sealed class ValidationEngineTests
     /// <summary>Minimal 5-byte empty BSON document.</summary>
     private static byte[] EmptyBsonDoc() => [0x05, 0x00, 0x00, 0x00, 0x00];
 
+    // Folder used as ParentFolder in incremental test records.
+    private const string ParentFolderPath = "full/2025/Q1/parent-backup-id/";
+
+    // A minimal parent BackupRecord returned by GetBackupRecordByFolderAsync mocks.
+    private static BackupRecord MakeParentRecord() => new()
+    {
+        BackupId     = "parent-backup-id",
+        BackupType   = BackupType.Full,
+        BackupFolder = ParentFolderPath,
+        DatabaseName = DbName,
+        AnchorTs     = AnchorTs - 86_400,
+        QuarterLabel = "2025-Q1"
+    };
+
     private static BackupRecord MakeFullBackupRecord(
         string     collectionName = CollName,
         long       totalDocs      = 100,
         string     chunkBlobPath  = "full/2025/Q1/chunk.bson.gz",
         string     sha256Hash     = "abc123",
         BackupType backupType     = BackupType.Full,
-        long?      queryFromTs    = null)
+        long?      queryFromTs    = null,
+        string?    parentFolder   = null)
     {
         return new BackupRecord
         {
@@ -63,6 +78,7 @@ public sealed class ValidationEngineTests
             DatabaseName = DbName,
             AnchorTs     = AnchorTs,
             QueryFromTs  = queryFromTs,
+            ParentFolder = parentFolder,
             QuarterLabel = "2025-Q1",
             Collections  =
             [
@@ -370,14 +386,19 @@ public sealed class ValidationEngineTests
         var metaMock   = new Mock<IMetadataRepository>();
 
         var record = MakeFullBackupRecord(
-            totalDocs:   50,
-            sha256Hash:  "ignored",
-            backupType:  BackupType.Incremental,
-            queryFromTs: AnchorTs - 86_400);
+            totalDocs:    50,
+            sha256Hash:   "ignored",
+            backupType:   BackupType.Incremental,
+            queryFromTs:  AnchorTs - 86_400,
+            parentFolder: ParentFolderPath);
 
         metaMock
             .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
+
+        metaMock
+            .Setup(m => m.GetBackupRecordByFolderAsync(ParentFolderPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeParentRecord());
 
         var engine = MakeEngine(
             sourceMock, new Mock<IStorageConnector>(), metaMock);
@@ -405,22 +426,27 @@ public sealed class ValidationEngineTests
     [TestMethod]
     public async Task ValidateAsync_L3_IncrementalBackup_SufficientCount_Passes()
     {
-        const long queryFromTs     = AnchorTs - 86_400;
-        const long manifestCount   = 50;
+        const long queryFromTs      = AnchorTs - 86_400;
+        const long manifestCount    = 50;
         const long liveChangedCount = 40; // manifest >= live — OK
 
         var sourceMock = new Mock<IBackupSourceConnector>();
         var metaMock   = new Mock<IMetadataRepository>();
 
         var record = MakeFullBackupRecord(
-            totalDocs:   manifestCount,
-            sha256Hash:  "ignored",
-            backupType:  BackupType.Incremental,
-            queryFromTs: queryFromTs);
+            totalDocs:    manifestCount,
+            sha256Hash:   "ignored",
+            backupType:   BackupType.Incremental,
+            queryFromTs:  queryFromTs,
+            parentFolder: ParentFolderPath);
 
         metaMock
             .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
+
+        metaMock
+            .Setup(m => m.GetBackupRecordByFolderAsync(ParentFolderPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeParentRecord());
 
         sourceMock
             .Setup(s => s.CountDocumentsAsOfAsync(
@@ -452,14 +478,19 @@ public sealed class ValidationEngineTests
         var metaMock   = new Mock<IMetadataRepository>();
 
         var record = MakeFullBackupRecord(
-            totalDocs:   manifestCount,
-            sha256Hash:  "ignored",
-            backupType:  BackupType.Incremental,
-            queryFromTs: queryFromTs);
+            totalDocs:    manifestCount,
+            sha256Hash:   "ignored",
+            backupType:   BackupType.Incremental,
+            queryFromTs:  queryFromTs,
+            parentFolder: ParentFolderPath);
 
         metaMock
             .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(record);
+
+        metaMock
+            .Setup(m => m.GetBackupRecordByFolderAsync(ParentFolderPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeParentRecord());
 
         sourceMock
             .Setup(s => s.CountDocumentsAsOfAsync(
@@ -488,7 +519,7 @@ public sealed class ValidationEngineTests
         var sourceMock = new Mock<IBackupSourceConnector>();
         var metaMock   = new Mock<IMetadataRepository>();
 
-        // QueryFromTs is null — manifest is malformed
+        // QueryFromTs is null — manifest is malformed; caught by coherence check.
         var record = MakeFullBackupRecord(
             totalDocs:   50,
             sha256Hash:  "ignored",
@@ -509,8 +540,12 @@ public sealed class ValidationEngineTests
             },
             CancellationToken.None);
 
+        // Failure is now surfaced at the record (manifest coherence) level,
+        // not the collection level.
         Assert.IsFalse(result.Passed);
-        StringAssert.Contains(result.CollectionResults[0].FailureDetail, "QueryFromTs is absent");
+        Assert.IsNotNull(result.ManifestCoherenceDetail);
+        StringAssert.Contains(result.ManifestCoherenceDetail, "QueryFromTs");
+        Assert.AreEqual(0, result.CollectionResults.Count);
     }
 
     [TestMethod]
@@ -637,9 +672,9 @@ public sealed class ValidationEngineTests
     // ------------------------------------------------------------------ //
 
     [TestMethod]
-    public async Task ValidateAsync_EmptyCollections_Passed_IsFalse()
+    public async Task ValidateAsync_FullBackup_EmptyCollections_Passed_IsFalse()
     {
-        // A backup with no collections: Passed must be false (no results → can't pass).
+        // A full backup with no collection results → Passed=false (nothing validated).
         var metaMock = new Mock<IMetadataRepository>();
         var record = new BackupRecord
         {
@@ -666,6 +701,137 @@ public sealed class ValidationEngineTests
             CancellationToken.None);
 
         Assert.IsFalse(result.Passed,
-            "ValidationResult.Passed requires at least one collection result");
+            "A full backup with no collection results must not pass.");
+    }
+
+    [TestMethod]
+    public async Task ValidateAsync_IncrementalBackup_ZeroCollections_Passed_IsTrue()
+    {
+        // An incremental with no changed collections is a valid zero-delta — Passed=true.
+        var metaMock = new Mock<IMetadataRepository>();
+        var record = new BackupRecord
+        {
+            BackupId     = BackupId,
+            BackupType   = BackupType.Incremental,
+            BackupFolder = FolderPath,
+            DatabaseName = DbName,
+            AnchorTs     = AnchorTs,
+            QueryFromTs  = AnchorTs - 86_400,
+            ParentFolder = ParentFolderPath,
+            QuarterLabel = "2025-Q1",
+            Collections  = []
+        };
+
+        metaMock
+            .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record);
+
+        metaMock
+            .Setup(m => m.GetBackupRecordByFolderAsync(ParentFolderPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MakeParentRecord());
+
+        var engine = MakeEngine(
+            new Mock<IBackupSourceConnector>(),
+            new Mock<IStorageConnector>(),
+            metaMock);
+
+        var result = await engine.ValidateAsync(
+            new ValidationRequest { BackupId = BackupId, Levels = ValidationLevel.StructuralIntegrity },
+            CancellationToken.None);
+
+        Assert.IsTrue(result.Passed,
+            "An incremental with zero changed collections is a valid zero-delta and must pass.");
+        Assert.IsNull(result.ManifestCoherenceDetail);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Manifest coherence — incremental backups
+    // ------------------------------------------------------------------ //
+
+    [TestMethod]
+    public async Task ValidateAsync_IncrementalBackup_MissingParentFolder_CoherenceFails()
+    {
+        var metaMock = new Mock<IMetadataRepository>();
+        var record = MakeFullBackupRecord(
+            backupType:   BackupType.Incremental,
+            queryFromTs:  AnchorTs - 86_400,
+            parentFolder: null); // missing
+
+        metaMock
+            .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record);
+
+        var engine = MakeEngine(
+            new Mock<IBackupSourceConnector>(), new Mock<IStorageConnector>(), metaMock);
+        var result = await engine.ValidateAsync(
+            new ValidationRequest { BackupId = BackupId, Levels = ValidationLevel.StructuralIntegrity },
+            CancellationToken.None);
+
+        Assert.IsFalse(result.Passed);
+        Assert.IsNotNull(result.ManifestCoherenceDetail);
+        StringAssert.Contains(result.ManifestCoherenceDetail, "ParentFolder");
+    }
+
+    [TestMethod]
+    public async Task ValidateAsync_IncrementalBackup_InvalidTimestampOrder_CoherenceFails()
+    {
+        var metaMock = new Mock<IMetadataRepository>();
+
+        // AnchorTs must be > QueryFromTs; here AnchorTs == QueryFromTs → invalid.
+        var record = new BackupRecord
+        {
+            BackupId     = BackupId,
+            BackupType   = BackupType.Incremental,
+            BackupFolder = FolderPath,
+            DatabaseName = DbName,
+            AnchorTs     = AnchorTs,
+            QueryFromTs  = AnchorTs,      // same — not strictly greater
+            ParentFolder = ParentFolderPath,
+            QuarterLabel = "2025-Q1",
+            Collections  = []
+        };
+
+        metaMock
+            .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record);
+
+        var engine = MakeEngine(
+            new Mock<IBackupSourceConnector>(), new Mock<IStorageConnector>(), metaMock);
+        var result = await engine.ValidateAsync(
+            new ValidationRequest { BackupId = BackupId, Levels = ValidationLevel.StructuralIntegrity },
+            CancellationToken.None);
+
+        Assert.IsFalse(result.Passed);
+        Assert.IsNotNull(result.ManifestCoherenceDetail);
+        StringAssert.Contains(result.ManifestCoherenceDetail, "AnchorTs");
+    }
+
+    [TestMethod]
+    public async Task ValidateAsync_IncrementalBackup_ParentNotFoundInStorage_CoherenceFails()
+    {
+        var metaMock = new Mock<IMetadataRepository>();
+        var record = MakeFullBackupRecord(
+            backupType:   BackupType.Incremental,
+            queryFromTs:  AnchorTs - 86_400,
+            parentFolder: ParentFolderPath);
+
+        metaMock
+            .Setup(m => m.GetBackupRecordAsync(BackupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(record);
+
+        // Parent folder exists as a path but has no manifest.
+        metaMock
+            .Setup(m => m.GetBackupRecordByFolderAsync(ParentFolderPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BackupRecord?)null);
+
+        var engine = MakeEngine(
+            new Mock<IBackupSourceConnector>(), new Mock<IStorageConnector>(), metaMock);
+        var result = await engine.ValidateAsync(
+            new ValidationRequest { BackupId = BackupId, Levels = ValidationLevel.StructuralIntegrity },
+            CancellationToken.None);
+
+        Assert.IsFalse(result.Passed);
+        Assert.IsNotNull(result.ManifestCoherenceDetail);
+        StringAssert.Contains(result.ManifestCoherenceDetail, "no manifest");
     }
 }

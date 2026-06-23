@@ -122,6 +122,18 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Resolves the restore chain for <paramref name="databaseName"/> as of
+    /// <paramref name="targetDate"/> and runs per-step validation at the
+    /// requested <paramref name="levels"/>. Returns one result per chain step,
+    /// ordered oldest-first (full backup first).
+    /// </summary>
+    Task<Models.ChainValidationResult> ValidateRestoreChainAsync(
+        string databaseName,
+        DateTimeOffset targetDate,
+        ValidationLevel levels,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Assembles an audit report for the specified date range or a single
     /// restore operation. The returned <see cref="Models.AuditReport"/> is a
     /// structured object — the caller is responsible for rendering and

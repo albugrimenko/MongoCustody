@@ -77,7 +77,7 @@ Q2 Full Backup (Apr 1)   new chain begins
 
 **Self-contained storage.** All backup metadata lives in `manifest.json` files written alongside the backup chunks in Blob Storage. No separate metadata database is required. If the source database is completely lost, the backup system remains fully operational from Blob Storage alone — no circular dependency.
 
-**Soft-delete aware.** MongoCustody assumes all collections implement soft delete (a boolean deleted flag + a server-managed timestamp). Deletions are therefore visible as document updates and are captured correctly by incremental backups. Hard-delete operations are out of scope. The field names default to `isDeleted` and `_ts` and are [configurable per database](#per-database-field-name-overrides).
+**Document-agnostic backup.** MongoCustody backs up and restores every document regardless of its content or any soft-delete flag. Soft-delete conventions (a `isDeleted` field, a `deletedAt` timestamp, etc.) are the application's responsibility — the backup system treats soft-deleted documents identically to active ones. A document that was soft-deleted after the full backup appears in an incremental with its updated state and is upserted correctly during restore.
 
 **Bounded restore complexity.** The maximum restore chain depth is 19 operations (1 full + 12 checkpoints + 6 daily incrementals), regardless of the restore target date. This is constant and predictable.
 
@@ -175,6 +175,7 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a `mongocu
   ],
   "policy": {
     "incrementalBufferSeconds": 300,
+    "maxIncrementalChainDepth": 19,
     "backupFormat": "Bson",
     "compressionLevel": "Fastest",
     "maxParallelCollections": 4,
@@ -188,9 +189,20 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a `mongocu
     "mongoAccountEndpointKey": "MONGOCUSTODY_MONGO_ENDPOINT",
     "storageConnectionStringKey": "MONGOCUSTODY_STORAGE_CONNECTION_STRING",
     "storageAccountEndpointKey": "MONGOCUSTODY_STORAGE_ENDPOINT"
+  },
+  "dryRun": {
+    "connectionStringKey": "MONGOCUSTODY_DRY_RUN_CONNECTION_STRING",
+    "databaseName": "mongocustody-dry-run"
+  },
+  "report": {
+    "defaultOutputDirectory": "/var/log/mongocustody/reports"
   }
 }
 ```
+
+`policy.maxIncrementalChainDepth` caps how many incremental backups can accumulate before a chain-depth warning is emitted (default: `19`). The backup still proceeds — the warning is advisory (Option B behaviour). Run a checkpoint to reset the chain depth.
+
+`report.defaultOutputDirectory` sets the directory where auto-named audit report files are written when `--output-file` is not specified on the `report generate` command. The command exits with an error if neither the CLI flag nor this field is set.
 
 All `secrets.*Key` values are overridable. The defaults shown above are used when the field is omitted.
 
@@ -251,6 +263,8 @@ If your collections use a different field name for the timestamp, override it pe
 |---|---|---|
 | `timestampAttribute` | `_ts` | Unix-second timestamp field used for incremental change detection |
 
+The `isDeleted` / soft-delete field is **not** configured here — MongoCustody does not filter by any deleted flag. All documents are backed up and restored regardless of their soft-delete state.
+
 ---
 
 ## Usage
@@ -308,6 +322,10 @@ var result = await backupService.RunIncrementalBackupAsync(
         Databases = ["your-database"],
         TriggeredBy = "scheduler"
     }, ct);
+
+// result.Status == BackupStatus.Completed when successful.
+// result.DatabaseResults[0].FailureReason is set (but status still Completed)
+// when the chain is approaching maxIncrementalChainDepth — run a checkpoint to reset.
 ```
 
 #### Restore to a point in time
@@ -339,14 +357,32 @@ var result = await backupService.ValidateBackupAsync(
     new ValidationRequest
     {
         BackupId = "a3f8c2d1-...",
-        Levels = [
-            ValidationLevel.StructuralIntegrity,
-            ValidationLevel.CountConsistency
-        ]
+        Levels = ValidationLevel.StructuralIntegrity | ValidationLevel.CountConsistency
     }, ct);
+
+// result.ManifestCoherenceDetail is non-null when an incremental manifest is
+// structurally broken (missing QueryFromTs, broken parent link, etc.) and
+// per-collection checks were skipped.
+if (result.ManifestCoherenceDetail is not null)
+    Console.WriteLine($"Coherence failure: {result.ManifestCoherenceDetail}");
 
 foreach (var collection in result.CollectionResults)
     Console.WriteLine($"{collection.CollectionName}: {(collection.Passed ? "PASS" : "FAIL")}");
+```
+
+#### Validate an entire restore chain
+
+```csharp
+var chainResult = await backupService.ValidateRestoreChainAsync(
+    databaseName: "your-database",
+    targetDate: DateTimeOffset.UtcNow,
+    levels: ValidationLevel.StructuralIntegrity | ValidationLevel.IncrementalCompleteness,
+    ct);
+
+Console.WriteLine($"Chain passed: {chainResult.Passed}  ({chainResult.Steps.Count} steps)");
+foreach (var step in chainResult.Steps)
+    Console.WriteLine(
+        $"  Step {step.StepIndex} [{step.BackupType}]: {(step.Validation.Passed ? "PASS" : "FAIL")}");
 ```
 
 ### As a CLI Tool
@@ -369,6 +405,19 @@ mongocustody backup full \
   [--triggered-by scheduler] \
   [--output json]
 ```
+
+#### Incremental backup
+
+```bash
+mongocustody backup incremental \
+  --config mongocustody.json \
+  --database your-database \
+  [--triggered-by scheduler]
+```
+
+A chain-depth warning is printed to stderr (but the backup still completes) when the incremental count in the current quarter reaches `policy.maxIncrementalChainDepth`. Run `backup checkpoint` to reset the chain.
+
+#### Full backup
 
 In text mode, a live progress bar is rendered to stderr while the backup runs:
 
@@ -514,10 +563,10 @@ Multiple levels can be passed as space-separated values (`--level structural cou
 
 #### Validate restore chain
 
-Shows the backup chain that *would* be applied for a given database and date without writing any data. Useful for pre-flight checks, capacity estimation, and debugging restore issues.
+Shows the backup chain that *would* be applied for a given database and date without writing any data, or validates every step in that chain. Useful for pre-flight checks, capacity estimation, and debugging restore issues.
 
 ```bash
-# Show the chain for a specific restore point
+# Show the chain for a specific restore point (preview only)
 mongocustody validate chain \
   --config mongocustody.json \
   --database source-database \
@@ -528,30 +577,57 @@ mongocustody validate chain \
   --config mongocustody.json \
   --database source-database
 
+# Validate every step in the chain — runs L1 (structural) by default
+mongocustody validate chain \
+  --database source-database \
+  --date 2025-04-15T00:00:00Z \
+  --validate
+
+# Validate every step at multiple levels
+mongocustody validate chain \
+  --database source-database \
+  --date 2025-04-15T00:00:00Z \
+  --validate \
+  --level structural incremental
+
 # Machine-readable output
 mongocustody validate chain \
   --database source-database \
   --date 2025-04-15T00:00:00Z \
+  --validate \
   --output json
 ```
 
-Sample output:
+**Preview mode** (no `--validate`) shows the chain table and exits. **Validation mode** (`--validate`) runs per-step validation and prints a pass/fail summary per step:
 
 ```
 ────────────────────────────────────────────────────
-Restore chain for 'source-database'
-  Requested : 2025-04-15 00:00:00Z
-  Best point: 2025-04-14 23:45:00Z
+Database   : source-database
+Date       : 2025-04-15 00:00:00Z
+Result     : PASSED
+Steps      : 3
 
-  #    Type          Completed               Folder
-  ---  ------------  ----------------------  ------
-  1    Full          2025-01-01 02:10:00Z    full/2025/Q1/backup-abc/
-  2    Checkpoint    2025-03-31 03:00:00Z    checkpoint/2025/Q1/backup-abc/2025-03-31/
-  3    Incremental   2025-04-14 23:45:00Z    incremental/2025/Q1/backup-abc/2025-04-14/
+  ✓ Step 1: [Full        ] full-backup-abc  (2025-01-01 02:10:00Z)
+       ✓  patients                                    manifest:  1,420,183 docs
+       ✓  encounters                                  manifest:    382,041 docs
+
+  ✓ Step 2: [Checkpoint  ] ckpt-2025-03-31  (2025-03-31 03:00:00Z)
+       ✓  patients                                    manifest:     12,500 docs
+       ✓  encounters                                  manifest:      4,200 docs
+
+  ✓ Step 3: [Incremental ] incr-2025-04-14  (2025-04-14 23:45:00Z)
+       ✓  patients                                    manifest:        317 docs
 ────────────────────────────────────────────────────
 ```
 
-If the best available point is more than 1 day before the requested date, a gap warning is shown. The command exits with code `0` when a chain is found, `1` when no eligible backup exists.
+If an incremental step has a broken manifest (missing `QueryFromTs`, null `ParentFolder`, or the parent backup folder has no manifest), the coherence failure is shown before collection details:
+
+```
+  ✗ Step 3: [Incremental ] incr-2025-04-14  (2025-04-14 23:45:00Z)
+       COHERENCE FAILURE: Parent backup 'full/2025/Q1/old-id/' has no manifest — the restore chain may be broken.
+```
+
+The command exits with code `0` when the chain is found (or passes all validation), `1` on failure or missing chain.
 
 #### Validate dry-run
 
@@ -605,7 +681,7 @@ If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an
 
 `report.defaultOutputDirectory` sets the directory where auto-named report files are written when `--output-file` is not specified on the `report generate` command.
 
-> **Planned commands** (Phases 6–9): `backup incremental`, `backup checkpoint`.
+> **Planned commands** (Phase 8): `backup checkpoint`.
 
 ---
 
@@ -689,7 +765,7 @@ Restore is always two steps: apply the full backup, then replay subsequent opera
 All restore operations use `replaceOne` with `upsert: true` keyed on `_id`. This means:
 
 - A document in both the full backup and a subsequent incremental is upserted twice — the incremental (applied second) writes the more recent state. The result is correct.
-- A document soft-deleted after the full backup appears in an incremental with `isDeleted: true`. Upsert writes this final state correctly.
+- A document soft-deleted after the full backup (however the application marks it) appears in an incremental with its updated state. Upsert writes this final state correctly.
 - The 5-minute buffer may produce harmless duplicate upserts near anchor boundaries. These are idempotent.
 
 ### Index restore sequence
@@ -720,21 +796,39 @@ A `RestoreRecord` (who requested, who approved, target database, reason) is writ
 
 ## Validation
 
-MongoCustody provides four levels of validation, all of which read data without writing anything.
+MongoCustody provides multiple validation modes, all of which read data without writing anything.
 
-| Level | What it checks | When it runs |
-|---|---|---|
-| **Structural Integrity** | SHA-256 hash of each collection blob matches the hash stored in the `BackupRecord` at write time | After every backup automatically |
-| **Count Consistency** | Document count in the backup matches a soft-delete-aware count query against the live database as of the anchor timestamp | After every full backup automatically |
-| **Incremental Completeness** | Document count in the incremental is ≥ the count of documents modified in the live database since the previous anchor | After every incremental automatically |
-| **Restore Dry-Run** | Full restore to a pre-provisioned empty database; verifies document counts; drops all collections after verification. Results recorded as `RestoreRecord` with `IsDryRun=true` and included in audit reports | Quarterly, or on demand via `validate dry-run` |
+### Per-backup validation (`validate backup`)
+
+| Level | Flag | What it checks | Live DB needed |
+|---|---|---|---|
+| **Structural Integrity** | `structural` / `l1` | SHA-256 hash of each collection blob matches the manifest | No |
+| **Count Consistency** | `count` / `l2` | Full backup document count matches the live DB count as of the anchor timestamp | Yes |
+| **Incremental Completeness** | `incremental` / `l3` | Incremental count ≥ changed documents in the live DB since the previous anchor | Yes |
+
+For incremental backups, a **manifest coherence check** always runs before per-collection validation regardless of the level requested. It verifies that:
+- `QueryFromTs` is present in the manifest
+- `ParentFolder` is set and its manifest exists in storage
+- `AnchorTs > QueryFromTs` (timestamps are ordered correctly)
+
+If coherence fails, per-collection checks are skipped and `ValidationResult.ManifestCoherenceDetail` is set.
+
+### Chain validation (`validate chain --validate`)
+
+Resolves the entire restore chain for a database and date, then runs per-backup validation on every step (L1 on all, L2 on the full, L3 on each incremental). Returns a `ChainValidationResult` with per-step results. A zero-change incremental (no collections backed up) is considered passing.
+
+### Restore dry-run (`validate dry-run`)
+
+Full restore to a pre-provisioned empty database; verifies document counts; drops all collections after verification. Results are recorded as a `RestoreRecord` with `IsDryRun = true` and appear in date-range audit reports under **Dry-Run Validation Activity**. Recommended quarterly.
 
 Run validation at any time via the library or CLI:
 
 ```bash
-# Validate structural integrity and count consistency
-mongocustody validate backup --backup-id a3f8c2d1 --level structural,count
+# Validate a single backup — structural integrity and count consistency
+mongocustody validate backup --backup-id a3f8c2d1 --level structural count
 
+# Validate an entire restore chain at all levels
+mongocustody validate chain --database your-database --validate --level all
 ```
 
 ---
@@ -889,8 +983,8 @@ The library is being built in the following sequence. Each phase is independentl
 | 3 | Full backup engine | ✅ Complete |
 | 4 | Validation engine (L1 structural integrity, L2 count consistency, L3 incremental completeness) | ✅ Complete |
 | 5 | Full backup restore engine (restore chain replay; dry-run validation via `validate dry-run`) | ✅ Complete |
-| 6 | Incremental backup engine | Planned |
-| 7 | Incremental restore and validation | Planned |
+| 6 | Incremental backup engine (configurable chain depth, chain-depth warning) | ✅ Complete |
+| 7 | Incremental restore and validation (manifest coherence, chain validation, `validate chain --validate`) | ✅ Complete |
 | 8 | Checkpoint engine | Planned |
 | 9 | DI wiring and public API | Planned |
 | 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`, `report`); live progress bar for backup and restore; HIPAA audit report generation | ✅ Complete |

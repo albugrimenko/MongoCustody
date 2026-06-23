@@ -8,13 +8,27 @@ public sealed class ValidationResult
     /// <summary>The backup ID that was validated.</summary>
     public string BackupId { get; set; } = string.Empty;
 
+    /// <summary>Type of the backup that was validated.</summary>
+    public BackupType BackupType { get; set; }
+
     /// <summary>The validation levels that were executed.</summary>
     public ValidationLevel LevelsExecuted { get; set; }
 
     /// <summary>
-    /// <c>true</c> if every collection passed every requested level.
+    /// Non-null when the backup manifest itself is incoherent (e.g. missing
+    /// <c>QueryFromTs</c>, broken parent link) and validation was aborted
+    /// before per-collection checks could run.
     /// </summary>
-    public bool Passed => CollectionResults.Count > 0
+    public string? ManifestCoherenceDetail { get; set; }
+
+    /// <summary>
+    /// <c>true</c> if the manifest is coherent and every collection passed every
+    /// requested level. A full backup with no collection results is considered
+    /// failing (nothing was validated). An incremental with no collection results
+    /// is passing — a zero-change delta is a valid outcome.
+    /// </summary>
+    public bool Passed => ManifestCoherenceDetail is null
+        && (BackupType != BackupType.Full || CollectionResults.Count > 0)
         && CollectionResults.All(r => r.Passed);
 
     /// <summary>UTC time the validation run completed.</summary>
