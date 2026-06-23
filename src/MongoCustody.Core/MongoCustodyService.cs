@@ -308,11 +308,11 @@ public sealed class MongoCustodyService : IMongoCustodyService
         request.IsDryRun = true;
         var result = await RestoreAsync(request, progress, ct).ConfigureAwait(false);
 
-        // Cleanup runs even if the restore failed, so the dry-run database is
-        // always returned to an empty state. Cleanup failure is recorded on the
-        // RestoreRecord and surfaced in the result but does NOT override a
-        // successful restore status — the auditor sees both outcomes.
+        // Only clean up if the restore actually ran (RestoreId is set only after the
+        // pre-flight check passes and data starts flowing). If the pre-flight failed
+        // (e.g. "database not empty"), nothing was written — don't touch the target.
         if (_restoreTargetFactory is not null &&
+            !string.IsNullOrWhiteSpace(result.RestoreId) &&
             !string.IsNullOrWhiteSpace(request.TargetConnectionString) &&
             !string.IsNullOrWhiteSpace(request.TargetDatabaseName))
         {
