@@ -101,12 +101,10 @@ public sealed class ValidationEngineTests
     };
 
     private static ValidationEngine MakeEngine(
-        Mock<IBackupSourceConnector>     sourceMock,
-        Mock<IStorageConnector>          storageMock,
-        Mock<IMetadataRepository>        metaMock,
-        IRestoreTargetConnectorFactory?  restoreFactory = null)
-        => new(sourceMock.Object, storageMock.Object, metaMock.Object,
-               DefaultConfig(), restoreFactory);
+        Mock<IBackupSourceConnector>  sourceMock,
+        Mock<IStorageConnector>       storageMock,
+        Mock<IMetadataRepository>     metaMock)
+        => new(sourceMock.Object, storageMock.Object, metaMock.Object, DefaultConfig());
 
     // ------------------------------------------------------------------ //
     //  Backup not found
@@ -131,28 +129,6 @@ public sealed class ValidationEngineTests
         Assert.AreEqual(BackupId, result.BackupId);
         Assert.AreEqual(ValidationLevel.None, result.LevelsExecuted);
         Assert.AreEqual(0, result.CollectionResults.Count);
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Level 4 — NotImplementedException guard
-    // ------------------------------------------------------------------ //
-
-    [TestMethod]
-    public async Task ValidateAsync_RestoreDryRun_ThrowsNotImplementedException()
-    {
-        var engine = MakeEngine(
-            new Mock<IBackupSourceConnector>(),
-            new Mock<IStorageConnector>(),
-            new Mock<IMetadataRepository>());
-
-        await Assert.ThrowsExactlyAsync<NotImplementedException>(() =>
-            engine.ValidateAsync(
-                new ValidationRequest
-                {
-                    BackupId = BackupId,
-                    Levels   = ValidationLevel.RestoreDryRun
-                },
-                CancellationToken.None));
     }
 
     // ------------------------------------------------------------------ //

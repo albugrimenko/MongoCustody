@@ -11,7 +11,6 @@ public sealed class ValidationLevelFlagsTests
         Assert.IsTrue(levels.HasFlag(ValidationLevel.StructuralIntegrity));
         Assert.IsTrue(levels.HasFlag(ValidationLevel.CountConsistency));
         Assert.IsFalse(levels.HasFlag(ValidationLevel.IncrementalCompleteness));
-        Assert.IsFalse(levels.HasFlag(ValidationLevel.RestoreDryRun));
     }
 
     [TestMethod]
@@ -20,7 +19,6 @@ public sealed class ValidationLevelFlagsTests
         Assert.IsFalse(ValidationLevel.None.HasFlag(ValidationLevel.StructuralIntegrity));
         Assert.IsFalse(ValidationLevel.None.HasFlag(ValidationLevel.CountConsistency));
         Assert.IsFalse(ValidationLevel.None.HasFlag(ValidationLevel.IncrementalCompleteness));
-        Assert.IsFalse(ValidationLevel.None.HasFlag(ValidationLevel.RestoreDryRun));
     }
 
     [TestMethod]
@@ -30,8 +28,7 @@ public sealed class ValidationLevelFlagsTests
         {
             ValidationLevel.StructuralIntegrity,
             ValidationLevel.CountConsistency,
-            ValidationLevel.IncrementalCompleteness,
-            ValidationLevel.RestoreDryRun
+            ValidationLevel.IncrementalCompleteness
         };
 
         for (int i = 0; i < all.Length; i++)

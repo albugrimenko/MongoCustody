@@ -46,6 +46,16 @@ public sealed class BackupPolicy
     public int BlobBlockSizeMb { get; set; } = 100;
 
     /// <summary>
+    /// Maximum number of incremental backups allowed between a full backup
+    /// (or checkpoint) and the next full backup. When the chain reaches this
+    /// depth a warning is emitted but the incremental proceeds — the caller
+    /// (scheduler) is responsible for triggering a full backup at the
+    /// appropriate cadence.
+    /// Default: 19.
+    /// </summary>
+    public int MaxIncrementalChainDepth { get; set; } = 19;
+
+    /// <summary>
     /// Maximum uncompressed size in gigabytes of a single chunk file.
     /// A new chunk is started after each complete document write when
     /// the accumulated uncompressed byte count meets or exceeds this threshold.

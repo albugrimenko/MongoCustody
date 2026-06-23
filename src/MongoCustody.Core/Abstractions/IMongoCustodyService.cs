@@ -36,6 +36,7 @@ public interface IMongoCustodyService
     /// </summary>
     Task<BackupResult> RunIncrementalBackupAsync(
         BackupRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default);
 
     /// <summary>

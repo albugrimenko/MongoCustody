@@ -140,9 +140,12 @@ public sealed class MongoCustodyService : IMongoCustodyService
     /// <inheritdoc />
     public Task<BackupResult> RunIncrementalBackupAsync(
         BackupRequest request,
+        IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default)
-        => throw new NotImplementedException(
-            "Incremental backup engine is planned for Phase 6.");
+    {
+        var engine = new IncrementalBackupEngine(_source, _storage, _metadata, _config);
+        return engine.RunAsync(request, progress, ct);
+    }
 
     // ------------------------------------------------------------------ //
     //  Phase 8 — Checkpoint (not yet implemented)

@@ -9,6 +9,7 @@
   ],
   "policy": {
     "incrementalBufferSeconds": 300,
+    "maxIncrementalChainDepth": 19,
     "backupFormat": "Bson",
     "compressionLevel": "Fastest",
     "maxParallelCollections": 4,
