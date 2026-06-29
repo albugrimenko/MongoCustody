@@ -268,7 +268,7 @@ public sealed class ValidationEngineTests
 
         sourceMock
             .Setup(s => s.CountDocumentsExistingAtAsync(
-                DbName, CollName, AnchorTs, It.IsAny<CancellationToken>()))
+                DbName, CollName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(docCount);
 
         var engine = MakeEngine(
@@ -299,7 +299,7 @@ public sealed class ValidationEngineTests
 
         sourceMock
             .Setup(s => s.CountDocumentsExistingAtAsync(
-                DbName, CollName, AnchorTs, It.IsAny<CancellationToken>()))
+                DbName, CollName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(liveCount);
 
         var engine = MakeEngine(
@@ -334,7 +334,7 @@ public sealed class ValidationEngineTests
 
         sourceMock
             .Setup(s => s.CountDocumentsExistingAtAsync(
-                DbName, CollName, AnchorTs, It.IsAny<CancellationToken>()))
+                DbName, CollName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(liveCount);
 
         var engine = MakeEngine(
@@ -364,7 +364,7 @@ public sealed class ValidationEngineTests
 
         sourceMock
             .Setup(s => s.CountDocumentsExistingAtAsync(
-                DbName, CollName, AnchorTs, It.IsAny<CancellationToken>()))
+                DbName, CollName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(liveCount);
 
         var engine = MakeEngine(
@@ -415,7 +415,7 @@ public sealed class ValidationEngineTests
         sourceMock.Verify(
             s => s.CountDocumentsExistingAtAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<long>(), It.IsAny<CancellationToken>()),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -609,7 +609,7 @@ public sealed class ValidationEngineTests
 
         sourceMock
             .Setup(s => s.CountDocumentsExistingAtAsync(
-                DbName, CollName, AnchorTs, It.IsAny<CancellationToken>()))
+                DbName, CollName, It.IsAny<CancellationToken>()))
             .ReturnsAsync(docCount);
 
         var engine = MakeEngine(sourceMock, storageMock, metaMock);
@@ -662,7 +662,7 @@ public sealed class ValidationEngineTests
         sourceMock.Verify(
             s => s.CountDocumentsExistingAtAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<long>(), It.IsAny<CancellationToken>()),
+                It.IsAny<CancellationToken>()),
             Times.Never,
             "Level 2 must not run when Level 1 fails");
     }

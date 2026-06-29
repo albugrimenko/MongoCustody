@@ -97,6 +97,15 @@ internal sealed class ValidationEngine
         ValidationLevel   levels,
         CancellationToken ct)
     {
+        // Compute which of the requested levels actually apply to this backup type.
+        var executedLevels = ValidationLevel.None;
+        if ((levels & ValidationLevel.StructuralIntegrity) != 0)
+            executedLevels |= ValidationLevel.StructuralIntegrity;
+        if ((levels & ValidationLevel.CountConsistency) != 0 && record.BackupType == BackupType.Full)
+            executedLevels |= ValidationLevel.CountConsistency;
+        if ((levels & ValidationLevel.IncrementalCompleteness) != 0 && record.BackupType == BackupType.Incremental)
+            executedLevels |= ValidationLevel.IncrementalCompleteness;
+
         // Manifest coherence check — incremental records only.
         if (record.BackupType == BackupType.Incremental)
         {
@@ -108,7 +117,7 @@ internal sealed class ValidationEngine
                 {
                     BackupId                = record.BackupId,
                     BackupType              = record.BackupType,
-                    LevelsExecuted          = levels,
+                    LevelsExecuted          = executedLevels,
                     CompletedAtUtc          = DateTimeOffset.UtcNow,
                     ManifestCoherenceDetail = detail,
                     CollectionResults       = []
@@ -120,7 +129,7 @@ internal sealed class ValidationEngine
         foreach (var collRecord in record.Collections)
         {
             var result = await ValidateCollectionAsync(
-                record, collRecord, levels, ct)
+                record, collRecord, executedLevels, ct)
                 .ConfigureAwait(false);
             collectionResults.Add(result);
         }
@@ -129,7 +138,7 @@ internal sealed class ValidationEngine
         {
             BackupId          = record.BackupId,
             BackupType        = record.BackupType,
-            LevelsExecuted    = levels,
+            LevelsExecuted    = executedLevels,
             CompletedAtUtc    = DateTimeOffset.UtcNow,
             CollectionResults = collectionResults
         };
@@ -172,7 +181,7 @@ internal sealed class ValidationEngine
             && record.BackupType == BackupType.Full)
         {
             var (l2Passed, liveCount, l2Detail) = await ValidateCountConsistencyAsync(
-                record.DatabaseName, collRecord, record.AnchorTs, ct)
+                record.DatabaseName, collRecord, ct)
                 .ConfigureAwait(false);
 
             result.LiveDocumentCount = liveCount;
@@ -299,7 +308,6 @@ internal sealed class ValidationEngine
         ValidateCountConsistencyAsync(
             string                 databaseName,
             CollectionBackupRecord collRecord,
-            long                   anchorTs,
             CancellationToken      ct)
     {
         long liveCount;
@@ -307,7 +315,7 @@ internal sealed class ValidationEngine
         {
             liveCount = await _source
                 .CountDocumentsExistingAtAsync(
-                    databaseName, collRecord.CollectionName, anchorTs, ct)
+                    databaseName, collRecord.CollectionName, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

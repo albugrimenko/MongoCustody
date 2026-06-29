@@ -54,6 +54,16 @@ public static class BackupPathBuilder
     }
 
     /// <summary>
+    /// Returns the storage prefix under which all incremental backups for a given
+    /// chain root are stored: <c>incremental/{year}/Q{q}/{rootBackupId}/</c>.
+    /// </summary>
+    public static string IncrementalPrefixForChainRoot(DateTimeOffset rootCompletedAt, string rootBackupId)
+    {
+        int q = ((rootCompletedAt.Month - 1) / 3) + 1;
+        return $"incremental/{rootCompletedAt.Year}/Q{q}/{rootBackupId}/";
+    }
+
+    /// <summary>
     /// <c>incremental/{year}/Q{q}/{fullBackupId}/{yyyy-MM-ddTHHmmZ}/</c>
     /// Lexicographic order equals chronological order.
     /// </summary>

@@ -234,6 +234,9 @@ internal static class ValidateCommand
                     database      = chainResult.DatabaseName,
                     requestedDate = chainResult.RequestedDate,
                     passed        = chainResult.Passed,
+                    error         = chainResult.Steps.Count == 0
+                        ? $"No backup chain found for '{chainResult.DatabaseName}' on or before {chainResult.RequestedDate:u}."
+                        : null,
                     steps         = chainResult.Steps.Select(s => new
                     {
                         step            = s.StepIndex,

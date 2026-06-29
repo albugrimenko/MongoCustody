@@ -168,7 +168,6 @@ public sealed class MongoDbConnector : IBackupSourceConnector
     public async Task<long> CountDocumentsExistingAtAsync(
         string databaseName,
         string collectionName,
-        long anchorTs,
         CancellationToken ct = default)
     {
         var collection = await GetCollectionAsync(databaseName, collectionName, ct)

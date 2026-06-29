@@ -211,6 +211,8 @@ internal static class BackupCommand
                         $"{db.TotalCompressedBytes / 1024.0 / 1024.0:F1} MB compressed");
                     if (db.Status == BackupStatus.Failed && db.FailureReason is not null)
                         Console.WriteLine($"       {db.FailureReason}");
+                    else if (db.Status == BackupStatus.Completed && db.FailureReason is not null)
+                        Console.WriteLine($"       WARNING: {db.FailureReason}");
                 }
                 Output.WriteSeparator();
             }

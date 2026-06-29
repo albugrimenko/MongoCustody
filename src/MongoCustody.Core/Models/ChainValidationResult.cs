@@ -40,5 +40,5 @@ public sealed class ChainStepValidationResult
     public DateTimeOffset CompletedAtUtc { get; init; }
 
     /// <summary>Validation result for this step.</summary>
-    public ValidationResult Validation { get; init; } = null!;
+    public required ValidationResult Validation { get; init; }
 }

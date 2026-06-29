@@ -134,11 +134,22 @@ internal sealed class IncrementalBackupEngine
 
         // Step 2 — determine which full/checkpoint is the chain root for this
         // incremental, then count how many incrementals already exist since it.
-        var chainRoot = PickLatest(previousFull, previousCheckpoint)
-                        ?? predecessor; // fallback: predecessor is itself a full
+        var chainRoot = PickLatest(previousFull, previousCheckpoint);
+        if (chainRoot is null)
+            return (Fail(databaseName,
+                "No full or checkpoint backup found. Run a full backup before running an incremental."),
+                backupId);
 
-        var chainDepth = await CountIncrementalsSinceAsync(chainRoot, databaseName, ct)
-            .ConfigureAwait(false);
+        int chainDepth;
+        try
+        {
+            chainDepth = await CountIncrementalsSinceAsync(chainRoot, databaseName, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (Fail(databaseName, $"Failed to count chain depth: {ex.Message}"), backupId);
+        }
 
         string? depthWarning = null;
         if (chainDepth >= _config.Policy.MaxIncrementalChainDepth)
@@ -160,8 +171,11 @@ internal sealed class IncrementalBackupEngine
         }
 
         // Step 4 — build paths
-        var fullBackupId = ExtractBackupId(chainRoot.BackupFolder);
-        var folder       = BackupPathBuilder.IncrementalBackupFolder(startedAt, fullBackupId);
+        string fullBackupId;
+        try { fullBackupId = ExtractBackupId(chainRoot.BackupFolder); }
+        catch (InvalidOperationException ex) { return (Fail(databaseName, ex.Message), backupId); }
+
+        var folder = BackupPathBuilder.IncrementalBackupFolder(startedAt, fullBackupId);
         var quarterLabel = BackupPathBuilder.QuarterLabel(startedAt);
         var queryFromTs  = previousAnchorTs - _config.Policy.IncrementalBufferSeconds;
 
@@ -187,26 +201,27 @@ internal sealed class IncrementalBackupEngine
         int completedCount = 0;
         int totalCount     = collections.Count;
 
-        var exportTasks = collections
-            .Select(col => ExportChangedCollectionAsync(
+        async Task<CollectionBackupRecord?> ExportWithProgressAsync(string col)
+        {
+            try
+            {
+                return await ExportChangedCollectionAsync(
                     chunkWriter, folder, databaseName, col,
-                    previousAnchorTs, semaphore, ct)
-                .ContinueWith(
-                    task =>
-                    {
-                        int done = Interlocked.Increment(ref completedCount);
-                        progress?.Report(new OperationProgress
-                        {
-                            Completed   = done,
-                            Total       = totalCount,
-                            CurrentItem = col
-                        });
-                        return task.GetAwaiter().GetResult();
-                    },
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default))
-            .ToList();
+                    previousAnchorTs, semaphore, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                int done = Interlocked.Increment(ref completedCount);
+                progress?.Report(new OperationProgress
+                {
+                    Completed   = done,
+                    Total       = totalCount,
+                    CurrentItem = col
+                });
+            }
+        }
+
+        var exportTasks = collections.Select(ExportWithProgressAsync).ToList();
 
         CollectionBackupRecord?[] rawResults;
         try
@@ -327,9 +342,8 @@ internal sealed class IncrementalBackupEngine
         string databaseName,
         CancellationToken ct)
     {
-        var rootId      = ExtractBackupId(chainRoot.BackupFolder);
-        var quarterParts = BackupPathBuilder.QuarterLabel(chainRoot.CompletedAtUtc).Split('-');
-        var prefix      = $"incremental/{quarterParts[0]}/{quarterParts[1]}/{rootId}/";
+        var rootId = ExtractBackupId(chainRoot.BackupFolder);
+        var prefix = BackupPathBuilder.IncrementalPrefixForChainRoot(chainRoot.CompletedAtUtc, rootId);
 
         int count = 0;
         await foreach (var folder in _storage.ListFoldersAsync(prefix, ct).ConfigureAwait(false))
@@ -357,7 +371,10 @@ internal sealed class IncrementalBackupEngine
     private static string ExtractBackupId(string folder)
     {
         var parts = folder.TrimEnd('/').Split('/');
-        return parts.Length >= 4 ? parts[3] : folder;
+        if (parts.Length < 4)
+            throw new InvalidOperationException(
+                $"Backup folder '{folder}' has an unexpected path format — expected at least 4 segments (type/year/quarter/backupId).");
+        return parts[3];
     }
 
     private static DatabaseBackupResult Fail(string dbName, string reason) =>

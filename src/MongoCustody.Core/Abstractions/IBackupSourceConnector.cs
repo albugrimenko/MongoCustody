@@ -97,15 +97,14 @@ public interface IBackupSourceConnector
         CancellationToken ct = default);
 
     /// <summary>
-    /// Returns a count of all documents in the collection, regardless of
-    /// deleted state. Used by Level 2 (Count Consistency) validation against
-    /// full backups. The <paramref name="anchorTs"/> parameter is retained for
-    /// interface compatibility but is not used in the filter.
+    /// Returns a count of all documents currently in the collection, regardless
+    /// of deleted state. Used by Level 2 (Count Consistency) validation against
+    /// full backups. Results reflect the collection's current state — L2 is most
+    /// meaningful when run shortly after the backup before hard deletes occur.
     /// </summary>
     Task<long> CountDocumentsExistingAtAsync(
         string databaseName,
         string collectionName,
-        long anchorTs,
         CancellationToken ct = default);
 
     /// <summary>

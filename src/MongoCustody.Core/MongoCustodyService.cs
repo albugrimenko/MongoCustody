@@ -309,7 +309,28 @@ public sealed class MongoCustodyService : IMongoCustodyService
     {
         // Flag so RestoreAsync stamps IsDryRun on the RestoreRecord.
         request.IsDryRun = true;
-        var result = await RestoreAsync(request, progress, ct).ConfigureAwait(false);
+        RestoreResult result;
+        try
+        {
+            result = await RestoreAsync(request, progress, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Best-effort cleanup on cancellation — data may have been partially written.
+            if (_restoreTargetFactory is not null &&
+                !string.IsNullOrWhiteSpace(request.TargetConnectionString) &&
+                !string.IsNullOrWhiteSpace(request.TargetDatabaseName))
+            {
+                try
+                {
+                    await using var t = _restoreTargetFactory.Create(request.TargetConnectionString);
+                    await t.DropAllCollectionsAsync(request.TargetDatabaseName, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch { /* best-effort; original cancellation is re-thrown */ }
+            }
+            throw;
+        }
 
         // Only clean up if the restore actually ran (RestoreId is set only after the
         // pre-flight check passes and data starts flowing). If the pre-flight failed
