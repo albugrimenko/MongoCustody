@@ -17,11 +17,13 @@ namespace MongoCustody.Connectors;
 /// </summary>
 internal static class StoragePathHelper
 {
-    internal const string ManifestFileName       = BackupPathBuilder.ManifestFileName;
-    internal const string RestoreRequestFileName = "restore-request.json";
-    internal const string IndexPrefix            = "_index/";
-    internal const string RestoreIndexPrefix     = "_restore_index/";
+    internal const string ManifestFileName            = BackupPathBuilder.ManifestFileName;
+    internal const string RestoreRequestFileName      = "restore-request.json";
+    internal const string IndexPrefix                 = "_index/";
+    internal const string RestoreIndexPrefix          = "_restore_index/";
     internal const string RestoreIndexPointerFileName = "pointer.json";
+    internal const string SecondaryIndexRootPrefix    = "_index/by-quarter/";
+    internal const string SecondaryIndexEntryFileName = "entry.json";
 
     // ------------------------------------------------------------------ //
     //  Quarter helpers — delegate to BackupPathBuilder (single source of truth)
@@ -109,8 +111,8 @@ internal static class StoragePathHelper
     /// </summary>
     internal static string IncrementalQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
-        var parts = BackupPathBuilder.QuarterLabel(utc).Split('-'); // ["YYYY", "Qq"]
-        return $"incremental/{parts[0]}/{parts[1]}/{fullBackupId}/";
+        int q = ((utc.Month - 1) / 3) + 1;
+        return $"incremental/{utc.Year}/Q{q}/{fullBackupId}/";
     }
 
     /// <summary>
@@ -120,8 +122,70 @@ internal static class StoragePathHelper
     /// </summary>
     internal static string CheckpointQuarterPrefix(DateTimeOffset utc, string fullBackupId)
     {
-        var parts = BackupPathBuilder.QuarterLabel(utc).Split('-'); // ["YYYY", "Qq"]
-        return $"checkpoint/{parts[0]}/{parts[1]}/{fullBackupId}/";
+        int q = ((utc.Month - 1) / 3) + 1;
+        return $"checkpoint/{utc.Year}/Q{q}/{fullBackupId}/";
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Secondary index paths
+    // ------------------------------------------------------------------ //
+
+    /// <summary>
+    /// Returns the listing prefix for all secondary index entries of a given
+    /// backup type and database in a quarter.
+    /// <example><c>_index/by-quarter/2025/Q2/incremental/mydb/</c></example>
+    /// </summary>
+    internal static string SecondaryIndexQuarterPrefix(
+        int year, int q, string type, string databaseName)
+        => $"{SecondaryIndexRootPrefix}{year}/Q{q}/{type}/{databaseName}/";
+
+    /// <summary>
+    /// Returns the folder path for a single secondary index entry. The folder
+    /// name encodes <paramref name="completedAt"/> so listings are chronologically
+    /// sorted without any blob reads.
+    /// <example><c>_index/by-quarter/2025/Q2/incremental/mydb/2025-06-28T1200Z-{backupId}/</c></example>
+    /// </summary>
+    internal static string SecondaryIndexFolderPath(
+        int year, int q, string type, string databaseName,
+        DateTimeOffset completedAt, string backupId)
+    {
+        string ts = completedAt.ToUniversalTime().ToString("yyyy-MM-ddTHHmmZ");
+        return $"{SecondaryIndexRootPrefix}{year}/Q{q}/{type}/{databaseName}/{ts}-{backupId}/";
+    }
+
+    /// <summary>
+    /// Returns the full blob path for a secondary index entry file.
+    /// <example><c>_index/by-quarter/2025/Q2/incremental/mydb/2025-06-28T1200Z-{backupId}/entry.json</c></example>
+    /// </summary>
+    internal static string SecondaryIndexEntryBlobPath(
+        int year, int q, string type, string databaseName,
+        DateTimeOffset completedAt, string backupId)
+        => $"{SecondaryIndexFolderPath(year, q, type, databaseName, completedAt, backupId)}{SecondaryIndexEntryFileName}";
+
+    /// <summary>
+    /// Parses <c>(CompletedAt, BackupId)</c> from the last segment of a secondary
+    /// index folder path. Returns <c>null</c> if the segment does not match the
+    /// expected <c>{yyyy-MM-ddTHHmmZ}-{backupId}</c> format.
+    /// </summary>
+    internal static (DateTimeOffset CompletedAt, string BackupId)? ParseSecondaryIndexFolder(
+        string folderPath)
+    {
+        var segment = folderPath.TrimEnd('/').Split('/').LastOrDefault();
+        if (segment is null) return null;
+        // Format: yyyy-MM-ddTHHmmZ-{backupId}  (timestamp is 16 chars: "yyyy-MM-ddTHHmmZ")
+        if (segment.Length <= 16) return null;
+        var dash = segment.IndexOf('-', 16); // find the separator after the timestamp
+        if (dash < 0) return null;
+        var tsPart = segment[..dash];
+        var idPart = segment[(dash + 1)..];
+        if (string.IsNullOrEmpty(idPart)) return null;
+        if (!DateTimeOffset.TryParseExact(
+                tsPart, "yyyy-MM-ddTHHmmZ",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal,
+                out var ts))
+            return null;
+        return (ts, idPart);
     }
 
     // ------------------------------------------------------------------ //

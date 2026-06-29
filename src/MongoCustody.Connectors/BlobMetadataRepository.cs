@@ -46,18 +46,26 @@ public sealed class BlobMetadataRepository : IMetadataRepository
     {
         var json = JsonSerializer.Serialize(record, JsonOptions);
 
-        // The manifest itself is already written by the engine as the final
-        // seal step. Here we write the lightweight index pointer so lookups
-        // by backupId don't require scanning the container.
+        // Write order: manifest first (source of truth), then index pointers.
+        // A partial failure leaves a manifest with no index entry — recoverable
+        // via `index rebuild`.
+        await _storage
+            .WriteManifestAsync(record.BackupFolder, json, ct)
+            .ConfigureAwait(false);
+
         var indexPath = StoragePathHelper.IndexBlobPath(record.BackupId);
         await WriteTextBlobAsync(indexPath, record.BackupFolder, ct)
             .ConfigureAwait(false);
 
-        // Persist the full record to the manifest path as well, so this
-        // repository is self-contained when used independently of the engine.
-        await _storage
-            .WriteManifestAsync(record.BackupFolder, json, ct)
-            .ConfigureAwait(false);
+        int q    = ((record.CompletedAtUtc.Month - 1) / 3) + 1;
+        string type = record.BackupType.ToString().ToLowerInvariant();
+        var entryPath = StoragePathHelper.SecondaryIndexEntryBlobPath(
+            record.CompletedAtUtc.Year, q, type,
+            record.DatabaseName, record.CompletedAtUtc, record.BackupId);
+        var entryJson = JsonSerializer.Serialize(
+            new SecondaryIndexEntry(record.BackupId, record.BackupFolder, record.AnchorTs),
+            JsonOptions);
+        await WriteTextBlobAsync(entryPath, entryJson, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -78,40 +86,31 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         BackupType backupType,
         CancellationToken ct = default)
     {
-        // Enumerate folders for the current and previous quarter,
-        // pick the latest manifest that matches type + database.
-        var now = DateTimeOffset.UtcNow;
-        var quartersToSearch = new[] { now, now.AddMonths(-3), now.AddMonths(-6), now.AddMonths(-9) };
+        var now  = DateTimeOffset.UtcNow;
+        string type = backupType.ToString().ToLowerInvariant();
 
-        foreach (var quarter in quartersToSearch)
+        // Search up to 4 quarters back. Secondary index folders are sorted
+        // lexicographically = chronologically, so the last folder is the latest.
+        for (int i = 0; i < 4; i++)
         {
-            var prefix = backupType switch
-            {
-                BackupType.Full =>
-                    $"full/{quarter.Year}/Q{((quarter.Month - 1) / 3) + 1}/",
-                BackupType.Incremental =>
-                    $"incremental/{quarter.Year}/Q{((quarter.Month - 1) / 3) + 1}/",
-                BackupType.Checkpoint =>
-                    $"checkpoint/{quarter.Year}/Q{((quarter.Month - 1) / 3) + 1}/",
-                _ => throw new ArgumentOutOfRangeException(nameof(backupType))
-            };
+            var quarter = now.AddMonths(-3 * i);
+            int q       = ((quarter.Month - 1) / 3) + 1;
+            var prefix  = StoragePathHelper.SecondaryIndexQuarterPrefix(
+                quarter.Year, q, type, databaseName);
 
-            BackupRecord? latest = null;
-
+            string? latestFolder = null;
             await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
                                .ConfigureAwait(false))
-            {
-                var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-                if (record is null) continue;
-                if (record.DatabaseName != databaseName) continue;
-                if (record.BackupType != backupType) continue;
+                latestFolder = folder;   // last wins — lexicographic = chronological
 
-                if (latest is null ||
-                    record.CompletedAtUtc > latest.CompletedAtUtc)
-                    latest = record;
-            }
+            if (latestFolder is null) continue;
 
-            if (latest is not null) return latest;
+            var entry = await ReadSecondaryIndexEntryAsync(latestFolder, ct)
+                .ConfigureAwait(false);
+            if (entry is null) continue;
+
+            var record = await ReadManifestAsync(entry.Folder, ct).ConfigureAwait(false);
+            if (record is not null) return record;
         }
 
         return null;
@@ -123,7 +122,6 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         string quarterLabel,
         CancellationToken ct = default)
     {
-        // Parse year and quarter number from label, e.g. "2025-Q1"
         var parts = quarterLabel.Split('-');
         if (parts.Length != 2 ||
             !int.TryParse(parts[0], out int year) ||
@@ -132,24 +130,20 @@ public sealed class BlobMetadataRepository : IMetadataRepository
 
         int q = parts[1][1] - '0';
         if (q < 1 || q > 4) return null;
-        var prefix = $"full/{year}/Q{q}/";
 
-        BackupRecord? result = null;
+        var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(year, q, "full", databaseName);
 
+        string? latestFolder = null;
         await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
                            .ConfigureAwait(false))
-        {
-            var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-            if (record is null) continue;
-            if (record.DatabaseName != databaseName) continue;
-            if (record.BackupType != BackupType.Full) continue;
+            latestFolder = folder;
 
-            if (result is null ||
-                record.CompletedAtUtc > result.CompletedAtUtc)
-                result = record;
-        }
+        if (latestFolder is null) return null;
 
-        return result;
+        var entry = await ReadSecondaryIndexEntryAsync(latestFolder, ct).ConfigureAwait(false);
+        if (entry is null) return null;
+
+        return await ReadManifestAsync(entry.Folder, ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ //
@@ -163,28 +157,40 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         DateTimeOffset to,
         CancellationToken ct = default)
     {
-        // Enumerate every quarter whose date range overlaps [from, to].
         var quarters = QuartersInRange(from, to);
-        var results  = new List<BackupRecord>();
+        var entryTasks = new List<Task<BackupRecord?>>();
 
         foreach (var (year, q) in quarters)
         {
-            var prefix = $"full/{year}/Q{q}/";
-            await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
-                               .ConfigureAwait(false))
-            {
-                var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-                if (record is null) continue;
-                if (databaseName is not null &&
-                    !string.Equals(record.DatabaseName, databaseName,
-                        StringComparison.OrdinalIgnoreCase)) continue;
-                if (record.BackupType != BackupType.Full) continue;
-                if (record.CompletedAtUtc < from || record.CompletedAtUtc > to) continue;
+            // When databaseName is null we must search all databases; enumerate
+            // the type-level prefix and iterate per-database sub-prefixes.
+            var dbNames = await ListSecondaryIndexDatabasesAsync(year, q, "full", ct)
+                .ConfigureAwait(false);
 
-                results.Add(record);
+            foreach (var db in dbNames)
+            {
+                if (databaseName is not null &&
+                    !string.Equals(db, databaseName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(year, q, "full", db);
+
+                await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                                   .ConfigureAwait(false))
+                {
+                    var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+                    if (parsed is null) continue;
+                    if (parsed.Value.CompletedAt < from || parsed.Value.CompletedAt > to) continue;
+
+                    // Capture for parallel manifest load.
+                    var captured = folder;
+                    entryTasks.Add(LoadManifestViaSecondaryIndexAsync(captured, ct));
+                }
             }
         }
 
+        var records = await Task.WhenAll(entryTasks).ConfigureAwait(false);
+        var results = records.Where(r => r is not null).Cast<BackupRecord>().ToList();
         results.Sort((a, b) => a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
         return results.AsReadOnly();
     }
@@ -216,89 +222,98 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         DateTimeOffset targetDate,
         CancellationToken ct = default)
     {
-        // Walk quarters backwards from targetDate until we find a full backup
-        // whose CompletedAtUtc is on or before targetDate. The quarter boundary
-        // is a storage detail — the best anchor may be in a prior quarter.
         var fullBackup = await FindLatestEligibleFullBackupAsync(
             databaseName, targetDate, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 $"No full backup found for database '{databaseName}' " +
                 $"on or before {targetDate:yyyy-MM-dd}. Cannot restore.");
 
-        var targetTs   = targetDate.ToUnixTimeSeconds();
-        var fullFolder = fullBackup.BackupFolder;
-        var chain      = new List<BackupRecord> { fullBackup };
+        var targetTs  = targetDate.ToUnixTimeSeconds();
+        var chain     = new List<BackupRecord> { fullBackup };
+        int q         = ((fullBackup.CompletedAtUtc.Month - 1) / 3) + 1;
 
-        // Walk checkpoints from the full backup's quarter.
-        var checkpointPrefix = StoragePathHelper.CheckpointQuarterPrefix(
-            fullBackup.CompletedAtUtc, ExtractBackupId(fullFolder));
+        // Collect eligible checkpoint and incremental index folders in parallel.
+        var checkpointFolders = new List<string>();
+        var incrementalFolders = new List<string>();
 
-        var checkpoints = new List<BackupRecord>();
+        var checkpointPrefix = StoragePathHelper.SecondaryIndexQuarterPrefix(
+            fullBackup.CompletedAtUtc.Year, q, "checkpoint", databaseName);
+        var incrementalPrefix = StoragePathHelper.SecondaryIndexQuarterPrefix(
+            fullBackup.CompletedAtUtc.Year, q, "incremental", databaseName);
+
         await foreach (var folder in _storage.ListFoldersAsync(checkpointPrefix, ct)
                            .ConfigureAwait(false))
         {
-            var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-            if (record is null) continue;
-            if (record.AnchorTs > fullBackup.AnchorTs && record.AnchorTs <= targetTs)
-                checkpoints.Add(record);
+            var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+            if (parsed is null) continue;
+            long completedTs = parsed.Value.CompletedAt.ToUnixTimeSeconds();
+            if (completedTs > fullBackup.AnchorTs && completedTs <= targetTs)
+                checkpointFolders.Add(folder);
         }
-        checkpoints.Sort((a, b) => a.AnchorTs.CompareTo(b.AnchorTs));
-        chain.AddRange(checkpoints);
 
-        var lastAnchorTs = chain[^1].AnchorTs;
-
-        // Walk incrementals from the full backup's quarter.
-        var incrementalPrefix = StoragePathHelper.IncrementalQuarterPrefix(
-            fullBackup.CompletedAtUtc, ExtractBackupId(fullFolder));
-
-        var incrementals = new List<BackupRecord>();
         await foreach (var folder in _storage.ListFoldersAsync(incrementalPrefix, ct)
                            .ConfigureAwait(false))
         {
-            var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-            if (record is null) continue;
-            if (record.AnchorTs > lastAnchorTs && record.AnchorTs <= targetTs)
-                incrementals.Add(record);
+            var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+            if (parsed is null) continue;
+            long completedTs = parsed.Value.CompletedAt.ToUnixTimeSeconds();
+            if (completedTs > fullBackup.AnchorTs && completedTs <= targetTs)
+                incrementalFolders.Add(folder);
         }
-        incrementals.Sort((a, b) => a.CompletedAtUtc.CompareTo(b.CompletedAtUtc));
-        chain.AddRange(incrementals);
+
+        // Load manifests for eligible records in parallel.
+        var checkpointTasks  = checkpointFolders.Select(f => LoadManifestViaSecondaryIndexAsync(f, ct));
+        var incrementalTasks = incrementalFolders.Select(f => LoadManifestViaSecondaryIndexAsync(f, ct));
+
+        var checkpoints  = (await Task.WhenAll(checkpointTasks).ConfigureAwait(false))
+            .Where(r => r is not null).Cast<BackupRecord>()
+            .OrderBy(r => r.AnchorTs).ToList();
+        var incrementals = (await Task.WhenAll(incrementalTasks).ConfigureAwait(false))
+            .Where(r => r is not null).Cast<BackupRecord>()
+            .OrderBy(r => r.CompletedAtUtc).ToList();
+
+        var lastAnchorTs = checkpoints.Count > 0
+            ? checkpoints[^1].AnchorTs
+            : fullBackup.AnchorTs;
+
+        chain.AddRange(checkpoints);
+        chain.AddRange(incrementals.Where(r => r.AnchorTs > lastAnchorTs));
 
         return chain.AsReadOnly();
     }
 
     // Searches backwards through quarters (up to 2 years) for the most recent
-    // full backup whose CompletedAtUtc is on or before targetDate.
+    // full backup on or before targetDate, using the secondary index.
     private async Task<BackupRecord?> FindLatestEligibleFullBackupAsync(
         string databaseName,
         DateTimeOffset targetDate,
         CancellationToken ct)
     {
-        var year = targetDate.Year;
-        var q    = ((targetDate.Month - 1) / 3) + 1;
+        int year = targetDate.Year;
+        int q    = ((targetDate.Month - 1) / 3) + 1;
 
-        // Search up to 8 quarters back (2 years) before giving up.
         for (int i = 0; i < 8; i++)
         {
-            var prefix = $"full/{year}/Q{q}/";
-            BackupRecord? best = null;
+            var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(year, q, "full", databaseName);
 
+            // Iterate in order; last eligible folder is the latest on or before targetDate.
+            string? bestFolder = null;
             await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
                                .ConfigureAwait(false))
             {
-                var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
-                if (record is null) continue;
-                if (!string.Equals(record.DatabaseName, databaseName,
-                        StringComparison.OrdinalIgnoreCase)) continue;
-                if (record.BackupType != BackupType.Full) continue;
-                if (record.CompletedAtUtc > targetDate) continue;
-
-                if (best is null || record.CompletedAtUtc > best.CompletedAtUtc)
-                    best = record;
+                var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+                if (parsed is null) continue;
+                if (parsed.Value.CompletedAt <= targetDate)
+                    bestFolder = folder;
             }
 
-            if (best is not null) return best;
+            if (bestFolder is not null)
+            {
+                var entry = await ReadSecondaryIndexEntryAsync(bestFolder, ct).ConfigureAwait(false);
+                if (entry is not null)
+                    return await ReadManifestAsync(entry.Folder, ct).ConfigureAwait(false);
+            }
 
-            // Step back one quarter.
             q--;
             if (q < 1) { q = 4; year--; }
         }
@@ -400,6 +415,224 @@ public sealed class BlobMetadataRepository : IMetadataRepository
         => ReadManifestAsync(folderPath, ct);
 
     // ------------------------------------------------------------------ //
+    //  Secondary index queries
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public async Task<int> CountIncrementalsSinceAsync(
+        string databaseName,
+        int year,
+        int quarter,
+        DateTimeOffset chainRootCompletedAt,
+        CancellationToken ct = default)
+    {
+        var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(
+            year, quarter, "incremental", databaseName);
+        int count = 0;
+        await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                           .ConfigureAwait(false))
+        {
+            var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+            if (parsed is not null && parsed.Value.CompletedAt > chainRootCompletedAt)
+                count++;
+        }
+        return count;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> IsSecondaryIndexPopulatedAsync(CancellationToken ct = default)
+    {
+        await foreach (var _ in _storage
+            .ListFoldersAsync(StoragePathHelper.SecondaryIndexRootPrefix, ct)
+            .ConfigureAwait(false))
+            return true;
+        return false;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Index validate / rebuild
+    // ------------------------------------------------------------------ //
+
+    /// <inheritdoc />
+    public async Task<IndexValidationResult> ValidateIndexAsync(CancellationToken ct = default)
+    {
+        var issues = new List<string>();
+        int totalEntries = 0;
+        int dangling     = 0;
+        int unindexed    = 0;
+
+        // Phase 1: walk every secondary index entry and verify its manifest exists.
+        var typeNames = new[] { "full", "incremental", "checkpoint" };
+        var now = DateTimeOffset.UtcNow;
+
+        for (int i = 0; i < 8; i++)
+        {
+            var quarter = now.AddMonths(-3 * i);
+            int q       = ((quarter.Month - 1) / 3) + 1;
+
+            foreach (var type in typeNames)
+            {
+                var typePfx = $"{StoragePathHelper.SecondaryIndexRootPrefix}{quarter.Year}/Q{q}/{type}/";
+                var databases = await ListSecondaryIndexDatabasesAsync(quarter.Year, q, type, ct)
+                    .ConfigureAwait(false);
+
+                foreach (var db in databases)
+                {
+                    var dbPfx = StoragePathHelper.SecondaryIndexQuarterPrefix(quarter.Year, q, type, db);
+                    await foreach (var folder in _storage.ListFoldersAsync(dbPfx, ct)
+                                       .ConfigureAwait(false))
+                    {
+                        totalEntries++;
+                        var entry = await ReadSecondaryIndexEntryAsync(folder, ct).ConfigureAwait(false);
+                        if (entry is null)
+                        {
+                            dangling++;
+                            issues.Add($"Secondary index entry has no content: {folder}");
+                            continue;
+                        }
+                        var manifestPath = StoragePathHelper.ManifestBlobPath(entry.Folder);
+                        if (!await _storage.BlobExistsAsync(manifestPath, ct).ConfigureAwait(false))
+                        {
+                            dangling++;
+                            issues.Add($"Index entry points to missing manifest: {entry.Folder}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2: walk manifests and verify each has a secondary index entry.
+        foreach (var type in typeNames)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                var quarter = now.AddMonths(-3 * i);
+                int q       = ((quarter.Month - 1) / 3) + 1;
+                var prefix  = $"{type}/{quarter.Year}/Q{q}/";
+
+                await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                                   .ConfigureAwait(false))
+                {
+                    var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
+                    if (record is null) continue;
+
+                    int rq = ((record.CompletedAtUtc.Month - 1) / 3) + 1;
+                    var expectedFolder = StoragePathHelper.SecondaryIndexFolderPath(
+                        record.CompletedAtUtc.Year, rq,
+                        record.BackupType.ToString().ToLowerInvariant(),
+                        record.DatabaseName, record.CompletedAtUtc, record.BackupId);
+
+                    var entryPath = $"{expectedFolder}{StoragePathHelper.SecondaryIndexEntryFileName}";
+                    if (!await _storage.BlobExistsAsync(entryPath, ct).ConfigureAwait(false))
+                    {
+                        unindexed++;
+                        issues.Add($"Manifest has no secondary index entry: {folder}");
+                    }
+                }
+            }
+        }
+
+        return new IndexValidationResult
+        {
+            TotalIndexEntries  = totalEntries,
+            DanglingEntries    = dangling,
+            UnindexedManifests = unindexed,
+            Issues             = issues.AsReadOnly()
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task<IndexRebuildResult> RebuildIndexAsync(
+        bool dryRun = false,
+        CancellationToken ct = default)
+    {
+        int added   = 0;
+        int removed = 0;
+
+        var typeNames = new[] { "full", "incremental", "checkpoint" };
+        var now = DateTimeOffset.UtcNow;
+
+        // Phase 1: for every manifest without a secondary index entry, write one.
+        foreach (var type in typeNames)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                var quarter = now.AddMonths(-3 * i);
+                int q       = ((quarter.Month - 1) / 3) + 1;
+                var prefix  = $"{type}/{quarter.Year}/Q{q}/";
+
+                await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                                   .ConfigureAwait(false))
+                {
+                    var record = await ReadManifestAsync(folder, ct).ConfigureAwait(false);
+                    if (record is null) continue;
+
+                    int rq = ((record.CompletedAtUtc.Month - 1) / 3) + 1;
+                    var entryPath = StoragePathHelper.SecondaryIndexEntryBlobPath(
+                        record.CompletedAtUtc.Year, rq,
+                        record.BackupType.ToString().ToLowerInvariant(),
+                        record.DatabaseName, record.CompletedAtUtc, record.BackupId);
+
+                    if (!await _storage.BlobExistsAsync(entryPath, ct).ConfigureAwait(false))
+                    {
+                        added++;
+                        if (!dryRun)
+                        {
+                            var entryJson = JsonSerializer.Serialize(
+                                new SecondaryIndexEntry(
+                                    record.BackupId, record.BackupFolder, record.AnchorTs),
+                                JsonOptions);
+                            await WriteTextBlobAsync(entryPath, entryJson, ct).ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2: remove dangling secondary index entries (no manifest).
+        for (int i = 0; i < 8; i++)
+        {
+            var quarter = now.AddMonths(-3 * i);
+            int q       = ((quarter.Month - 1) / 3) + 1;
+
+            foreach (var type in typeNames)
+            {
+                var databases = await ListSecondaryIndexDatabasesAsync(quarter.Year, q, type, ct)
+                    .ConfigureAwait(false);
+
+                foreach (var db in databases)
+                {
+                    var dbPfx = StoragePathHelper.SecondaryIndexQuarterPrefix(quarter.Year, q, type, db);
+                    await foreach (var folder in _storage.ListFoldersAsync(dbPfx, ct)
+                                       .ConfigureAwait(false))
+                    {
+                        var entry = await ReadSecondaryIndexEntryAsync(folder, ct).ConfigureAwait(false);
+                        if (entry is null) continue;
+
+                        var manifestPath = StoragePathHelper.ManifestBlobPath(entry.Folder);
+                        if (!await _storage.BlobExistsAsync(manifestPath, ct).ConfigureAwait(false))
+                        {
+                            removed++;
+                            if (!dryRun)
+                            {
+                                var entryPath = $"{folder}{StoragePathHelper.SecondaryIndexEntryFileName}";
+                                await _storage.DeleteBlobAsync(entryPath, ct).ConfigureAwait(false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return new IndexRebuildResult
+        {
+            EntriesAdded   = added,
+            OrphansRemoved = removed,
+            WasDryRun      = dryRun
+        };
+    }
+
+    // ------------------------------------------------------------------ //
     //  Health check
     // ------------------------------------------------------------------ //
 
@@ -432,6 +665,44 @@ public sealed class BlobMetadataRepository : IMetadataRepository
     // ------------------------------------------------------------------ //
     //  Private helpers
     // ------------------------------------------------------------------ //
+
+    private async Task<SecondaryIndexEntry?> ReadSecondaryIndexEntryAsync(
+        string indexFolder, CancellationToken ct)
+    {
+        var path = $"{indexFolder}{StoragePathHelper.SecondaryIndexEntryFileName}";
+        var json = await ReadTextBlobAsync(path, ct).ConfigureAwait(false);
+        if (json is null) return null;
+        try { return JsonSerializer.Deserialize<SecondaryIndexEntry>(json, JsonOptions); }
+        catch { return null; }
+    }
+
+    // Reads the secondary index entry for a folder then loads the full manifest.
+    private async Task<BackupRecord?> LoadManifestViaSecondaryIndexAsync(
+        string indexFolder, CancellationToken ct)
+    {
+        var entry = await ReadSecondaryIndexEntryAsync(indexFolder, ct).ConfigureAwait(false);
+        if (entry is null) return null;
+        return await ReadManifestAsync(entry.Folder, ct).ConfigureAwait(false);
+    }
+
+    // Lists database names that appear exactly one level under the type prefix.
+    // Filters to depth+1 so that the mock (which returns all descendants) and
+    // real Azure storage (which returns one level) both behave correctly.
+    private async Task<List<string>> ListSecondaryIndexDatabasesAsync(
+        int year, int q, string type, CancellationToken ct)
+    {
+        var prefix     = $"{StoragePathHelper.SecondaryIndexRootPrefix}{year}/Q{q}/{type}/";
+        int prefixDepth = prefix.TrimEnd('/').Split('/').Length;
+        var dbs        = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        await foreach (var folder in _storage.ListFoldersAsync(prefix, ct).ConfigureAwait(false))
+        {
+            var parts = folder.TrimEnd('/').Split('/');
+            if (parts.Length == prefixDepth + 1)
+                dbs.Add(parts[^1]);
+        }
+        return [.. dbs];
+    }
 
     private async Task<BackupRecord?> ReadManifestAsync(
         string folderPath,

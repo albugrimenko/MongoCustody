@@ -135,6 +135,11 @@ public sealed class IncrementalBackupEngineTests
         mock.Setup(m => m.SaveBackupRecordAsync(It.IsAny<BackupRecord>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        mock.Setup(m => m.CountIncrementalsSinceAsync(
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
         return mock;
     }
 
@@ -291,24 +296,15 @@ public sealed class IncrementalBackupEngineTests
     [TestMethod]
     public async Task RunAsync_ChainDepthAtMax_SucceedsWithWarning()
     {
-        // Report one existing incremental folder per depth check call.
-        var existingFolders = Enumerable
-            .Range(1, 19)
-            .Select(i => $"incremental/2025/Q1/full-backup-id/inc-{i:D3}/")
-            .ToArray();
-
         var sourceMock  = MakeSourceMock();
-        var storageMock = MakeStorageMock(existingFolders);
+        var storageMock = MakeStorageMock();
         var metaMock    = MakeMetaMock(latestFull: PreviousFullRecord);
 
-        // Each folder read returns a record counted toward depth.
-        metaMock.Setup(m => m.GetBackupRecordByFolderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string folder, CancellationToken _) => new BackupRecord
-            {
-                DatabaseName = DbName,
-                BackupType   = BackupType.Incremental,
-                AnchorTs     = PreviousAnchorTs + 1  // > chainRoot.AnchorTs
-            });
+        // Secondary index reports 19 existing incrementals (at the limit).
+        metaMock.Setup(m => m.CountIncrementalsSinceAsync(
+                DbName, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(19);
 
         sourceMock
             .Setup(s => s.ListCollectionsAsync(DbName, It.IsAny<CancellationToken>()))
@@ -339,22 +335,14 @@ public sealed class IncrementalBackupEngineTests
     public async Task RunAsync_ChainDepthBelowMax_NoWarning()
     {
         var sourceMock  = MakeSourceMock();
-        // Only 5 existing incrementals — well below limit of 19.
-        var existingFolders = Enumerable
-            .Range(1, 5)
-            .Select(i => $"incremental/2025/Q1/full-backup-id/inc-{i:D3}/")
-            .ToArray();
-
-        var storageMock = MakeStorageMock(existingFolders);
+        var storageMock = MakeStorageMock();
         var metaMock    = MakeMetaMock(latestFull: PreviousFullRecord);
 
-        metaMock.Setup(m => m.GetBackupRecordByFolderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string _, CancellationToken _) => new BackupRecord
-            {
-                DatabaseName = DbName,
-                BackupType   = BackupType.Incremental,
-                AnchorTs     = PreviousAnchorTs + 1
-            });
+        // Secondary index reports only 5 incrementals — well below limit of 19.
+        metaMock.Setup(m => m.CountIncrementalsSinceAsync(
+                DbName, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<DateTimeOffset>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(5);
 
         sourceMock
             .Setup(s => s.ListCollectionsAsync(DbName, It.IsAny<CancellationToken>()))

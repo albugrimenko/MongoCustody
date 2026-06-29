@@ -83,36 +83,73 @@ public sealed class BlobMetadataRepositoryChainResolutionTests
         };
 
     /// <summary>
-    /// Builds a mock IStorageConnector that:
-    /// - ReadManifestAsync returns the serialised record for any folder in
-    ///   <paramref name="manifests"/>, null for any unknown folder.
-    /// - ListFoldersAsync returns folders whose prefix matches.
+    /// Builds a mock IStorageConnector that serves both manifest blobs and
+    /// secondary index entry blobs for the supplied records.
+    /// ListFoldersAsync returns all registered folders (manifest + index) that
+    /// match the given prefix — intentionally returns all depths so that
+    /// callers must filter to the depth they need.
     /// </summary>
     private static IStorageConnector BuildMockStorage(
-        IEnumerable<BackupRecord> manifests)
+        IEnumerable<BackupRecord> records)
     {
-        var dict = manifests.ToDictionary(r => r.BackupFolder, r => Serialize(r));
+        var recordList = records.ToList();
+        var manifestsByFolder = recordList.ToDictionary(r => r.BackupFolder, r => Serialize(r));
+
+        // Build secondary index: folder path → entry JSON, plus all listable folders.
+        var entryBlobs  = new Dictionary<string, string>();  // entryBlobPath → json
+        var allFolders  = new HashSet<string>(manifestsByFolder.Keys);
+
+        foreach (var r in recordList)
+        {
+            int q     = ((r.CompletedAtUtc.Month - 1) / 3) + 1;
+            string tp = r.BackupType.ToString().ToLowerInvariant();
+            var indexFolder = StoragePathHelper.SecondaryIndexFolderPath(
+                r.CompletedAtUtc.Year, q, tp, r.DatabaseName, r.CompletedAtUtc, r.BackupId);
+            var entryPath = $"{indexFolder}{StoragePathHelper.SecondaryIndexEntryFileName}";
+            var entryJson = JsonSerializer.Serialize(
+                new SecondaryIndexEntry(r.BackupId, r.BackupFolder, r.AnchorTs), JsonOptions);
+
+            entryBlobs[entryPath] = entryJson;
+            allFolders.Add(indexFolder);
+        }
 
         var mock = new Mock<IStorageConnector>();
 
         mock.Setup(s => s.ReadManifestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns<string, CancellationToken>((folder, _) =>
-                Task.FromResult(dict.TryGetValue(folder, out var json) ? json : null));
+                Task.FromResult(manifestsByFolder.TryGetValue(folder, out var json) ? json : null));
 
         mock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns<string, CancellationToken>((prefix, ct) =>
-                dict.Keys
+                allFolders
                     .Where(k => k.StartsWith(prefix, StringComparison.Ordinal))
                     .OrderBy(k => k)
                     .ToAsyncEnumerable(ct));
 
-        // WriteManifestAsync and OpenWriteAsync needed for SaveBackupRecordAsync
+        mock.Setup(s => s.OpenReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+            {
+                if (entryBlobs.TryGetValue(path, out var json))
+                    return Task.FromResult<Stream>(
+                        new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)));
+                throw new FileNotFoundException($"Blob not found in mock: {path}");
+            });
+
+        mock.Setup(s => s.BlobExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+                Task.FromResult(entryBlobs.ContainsKey(path) ||
+                    manifestsByFolder.ContainsKey(path.Replace(
+                        StoragePathHelper.ManifestFileName, string.Empty))));
+
         mock.Setup(s => s.WriteManifestAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         mock.Setup(s => s.OpenWriteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => new MemoryStream());
+
+        mock.Setup(s => s.DeleteBlobAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         return mock.Object;
     }
@@ -251,6 +288,267 @@ public sealed class BlobMetadataRepositoryChainResolutionTests
         Assert.AreEqual(BackupType.Full,       chain[0].BackupType);
         Assert.AreEqual(BackupType.Checkpoint, chain[1].BackupType);
         Assert.AreEqual("ckp-01", chain[1].BackupId);
+    }
+}
+
+// ------------------------------------------------------------------ //
+//  Secondary index tests
+// ------------------------------------------------------------------ //
+
+[TestClass]
+public sealed class BlobMetadataRepositorySecondaryIndexTests
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private static string Serialize(BackupRecord r) => JsonSerializer.Serialize(r, JsonOptions);
+
+    private static BackupRecord MakeFull(string id, string db, DateTimeOffset at, long anchor) => new()
+    {
+        BackupId = id, BackupType = BackupType.Full,
+        BackupFolder = StoragePathHelper.FullBackupFolder(at, id),
+        DatabaseName = db, QuarterLabel = StoragePathHelper.QuarterLabel(at),
+        CompletedAtUtc = at, AnchorTs = anchor
+    };
+
+    private static BackupRecord MakeIncremental(
+        string id, string db, string fullId, DateTimeOffset at, long queryFrom, long anchor) => new()
+    {
+        BackupId = id, BackupType = BackupType.Incremental,
+        BackupFolder = StoragePathHelper.IncrementalBackupFolder(at, fullId),
+        DatabaseName = db, QuarterLabel = StoragePathHelper.QuarterLabel(at),
+        CompletedAtUtc = at, QueryFromTs = queryFrom, AnchorTs = anchor
+    };
+
+    // Builds a mock that serves manifests + secondary index entries for all records.
+    private static IStorageConnector BuildMock(IEnumerable<BackupRecord> records)
+    {
+        var recordList = records.ToList();
+        var manifests  = recordList.ToDictionary(r => r.BackupFolder, r => Serialize(r));
+        var entryBlobs = new Dictionary<string, string>();
+        var allFolders = new HashSet<string>(manifests.Keys);
+
+        foreach (var r in recordList)
+        {
+            int q   = ((r.CompletedAtUtc.Month - 1) / 3) + 1;
+            string tp = r.BackupType.ToString().ToLowerInvariant();
+            var indexFolder = StoragePathHelper.SecondaryIndexFolderPath(
+                r.CompletedAtUtc.Year, q, tp, r.DatabaseName, r.CompletedAtUtc, r.BackupId);
+            var entryPath   = $"{indexFolder}{StoragePathHelper.SecondaryIndexEntryFileName}";
+            entryBlobs[entryPath] = JsonSerializer.Serialize(
+                new SecondaryIndexEntry(r.BackupId, r.BackupFolder, r.AnchorTs), JsonOptions);
+            allFolders.Add(indexFolder);
+        }
+
+        var mock = new Mock<IStorageConnector>();
+        mock.Setup(s => s.ReadManifestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((f, _) =>
+                Task.FromResult(manifests.TryGetValue(f, out var j) ? j : null));
+        mock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((prefix, ct) =>
+                allFolders.Where(k => k.StartsWith(prefix)).OrderBy(k => k).ToAsyncEnumerable(ct));
+        mock.Setup(s => s.OpenReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+            {
+                if (entryBlobs.TryGetValue(path, out var j))
+                    return Task.FromResult<Stream>(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(j)));
+                throw new FileNotFoundException(path);
+            });
+        mock.Setup(s => s.BlobExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+                Task.FromResult(entryBlobs.ContainsKey(path) ||
+                    manifests.ContainsKey(path.Replace(StoragePathHelper.ManifestFileName, string.Empty))));
+        mock.Setup(s => s.WriteManifestAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        mock.Setup(s => s.OpenWriteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream());
+        mock.Setup(s => s.DeleteBlobAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        return mock.Object;
+    }
+
+    [TestMethod]
+    public async Task GetLatestBackupAsync_ReturnsLatestViaSecondaryIndex()
+    {
+        // Use recent dates so they fall within the 4-quarter search window.
+        var at1  = DateTimeOffset.UtcNow.AddDays(-10);
+        var at2  = DateTimeOffset.UtcNow.AddDays(-3);
+        var full1 = MakeFull("full-01", "mydb", at1, anchor: 1000);
+        var full2 = MakeFull("full-02", "mydb", at2, anchor: 2000);
+
+        var repo   = new BlobMetadataRepository(BuildMock([full1, full2]));
+        var result = await repo.GetLatestBackupAsync("mydb", BackupType.Full);
+
+        Assert.IsNotNull(result);
+        Assert.AreEqual("full-02", result!.BackupId);
+    }
+
+    [TestMethod]
+    public async Task GetLatestBackupAsync_ReturnsNull_WhenDatabaseHasNoEntries()
+    {
+        var at   = DateTimeOffset.UtcNow.AddDays(-3);
+        var full = MakeFull("full-01", "otherdb", at, anchor: 1000);
+
+        var repo   = new BlobMetadataRepository(BuildMock([full]));
+        var result = await repo.GetLatestBackupAsync("mydb", BackupType.Full);
+
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public async Task CountIncrementalsSinceAsync_CountsFromFolderNamesOnly()
+    {
+        var fullAt  = new DateTimeOffset(2025, 1, 1, 2, 0, 0, TimeSpan.Zero);
+        var inc1At  = new DateTimeOffset(2025, 1, 2, 1, 0, 0, TimeSpan.Zero);
+        var inc2At  = new DateTimeOffset(2025, 1, 3, 1, 0, 0, TimeSpan.Zero);
+        var full    = MakeFull("full-01", "mydb", fullAt, anchor: 1000);
+        var inc1    = MakeIncremental("inc-01", "mydb", "full-01", inc1At, 900, 1500);
+        var inc2    = MakeIncremental("inc-02", "mydb", "full-01", inc2At, 1400, 2000);
+
+        var storageMock = new Mock<IStorageConnector>();
+        var allFolders  = new HashSet<string>();
+        foreach (var r in new[] { full, inc1, inc2 })
+        {
+            int q   = ((r.CompletedAtUtc.Month - 1) / 3) + 1;
+            string tp = r.BackupType.ToString().ToLowerInvariant();
+            allFolders.Add(StoragePathHelper.SecondaryIndexFolderPath(
+                r.CompletedAtUtc.Year, q, tp, r.DatabaseName, r.CompletedAtUtc, r.BackupId));
+        }
+        storageMock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((prefix, ct) =>
+                allFolders.Where(k => k.StartsWith(prefix)).OrderBy(k => k).ToAsyncEnumerable(ct));
+
+        var repo  = new BlobMetadataRepository(storageMock.Object);
+        int count = await repo.CountIncrementalsSinceAsync("mydb", 2025, 1, fullAt);
+
+        Assert.AreEqual(2, count);
+        // Verify ReadManifestAsync was never called — counting uses names only.
+        storageMock.Verify(
+            s => s.ReadManifestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SaveBackupRecordAsync_WritesSecondaryIndexEntry()
+    {
+        var at     = new DateTimeOffset(2025, 4, 1, 3, 0, 0, TimeSpan.Zero);
+        var record = MakeFull("full-99", "mydb", at, anchor: 5000);
+
+        var writtenPaths = new List<string>();
+        var mock = new Mock<IStorageConnector>();
+        mock.Setup(s => s.WriteManifestAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        mock.Setup(s => s.OpenWriteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+            {
+                writtenPaths.Add(path);
+                return Task.FromResult<Stream>(new MemoryStream());
+            });
+
+        var repo = new BlobMetadataRepository(mock.Object);
+        await repo.SaveBackupRecordAsync(record);
+
+        // Expect: _index/{backupId} pointer + secondary index entry
+        Assert.IsTrue(writtenPaths.Any(p => p == $"_index/{record.BackupId}"),
+            "_index/{backupId} pointer missing");
+        Assert.IsTrue(writtenPaths.Any(p => p.StartsWith("_index/by-quarter/") && p.EndsWith("entry.json")),
+            "Secondary index entry.json missing");
+    }
+
+    [TestMethod]
+    public async Task ValidateIndexAsync_ReportsUnindexedManifest()
+    {
+        var at   = new DateTimeOffset(2025, 1, 1, 2, 0, 0, TimeSpan.Zero);
+        var full = MakeFull("full-01", "mydb", at, anchor: 1000);
+
+        // Storage has the manifest but no secondary index entry.
+        var manifests = new Dictionary<string, string> { [full.BackupFolder] = Serialize(full) };
+        var mock = new Mock<IStorageConnector>();
+        mock.Setup(s => s.ReadManifestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((f, _) =>
+                Task.FromResult(manifests.TryGetValue(f, out var j) ? j : null));
+        // Secondary index prefix returns nothing.
+        mock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((prefix, ct) =>
+            {
+                // Return manifest folder for backup-type prefix scans; empty for index prefix.
+                if (prefix.StartsWith("_index/"))
+                    return Enumerable.Empty<string>().ToAsyncEnumerable(ct);
+                return manifests.Keys
+                    .Where(k => k.StartsWith(prefix)).OrderBy(k => k).ToAsyncEnumerable(ct);
+            });
+        mock.Setup(s => s.BlobExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((path, _) =>
+                Task.FromResult(manifests.ContainsKey(path.Replace(StoragePathHelper.ManifestFileName, string.Empty))));
+
+        var repo   = new BlobMetadataRepository(mock.Object);
+        var result = await repo.ValidateIndexAsync();
+
+        Assert.IsFalse(result.IsHealthy);
+        Assert.AreEqual(0, result.DanglingEntries);
+        Assert.IsTrue(result.UnindexedManifests > 0);
+    }
+
+    [TestMethod]
+    public async Task RebuildIndexAsync_DryRun_DoesNotWrite()
+    {
+        var at   = new DateTimeOffset(2025, 1, 1, 2, 0, 0, TimeSpan.Zero);
+        var full = MakeFull("full-01", "mydb", at, anchor: 1000);
+
+        var manifests = new Dictionary<string, string> { [full.BackupFolder] = Serialize(full) };
+        var writeCalls = 0;
+        var mock = new Mock<IStorageConnector>();
+        mock.Setup(s => s.ReadManifestAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((f, _) =>
+                Task.FromResult(manifests.TryGetValue(f, out var j) ? j : null));
+        mock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((prefix, ct) =>
+            {
+                if (prefix.StartsWith("_index/"))
+                    return Enumerable.Empty<string>().ToAsyncEnumerable(ct);
+                return manifests.Keys.Where(k => k.StartsWith(prefix))
+                    .OrderBy(k => k).ToAsyncEnumerable(ct);
+            });
+        mock.Setup(s => s.BlobExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(false));
+        mock.Setup(s => s.OpenWriteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((_, _) => { writeCalls++; return Task.FromResult<Stream>(new MemoryStream()); });
+
+        var repo   = new BlobMetadataRepository(mock.Object);
+        var result = await repo.RebuildIndexAsync(dryRun: true);
+
+        Assert.IsTrue(result.WasDryRun);
+        Assert.IsTrue(result.EntriesAdded > 0);
+        Assert.AreEqual(0, writeCalls, "Dry-run must not write any blobs");
+    }
+
+    [TestMethod]
+    public async Task IsSecondaryIndexPopulatedAsync_ReturnsFalse_WhenEmpty()
+    {
+        var mock = new Mock<IStorageConnector>();
+        mock.Setup(s => s.ListFoldersAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((_, ct) =>
+                Enumerable.Empty<string>().ToAsyncEnumerable(ct));
+
+        var repo   = new BlobMetadataRepository(mock.Object);
+        var result = await repo.IsSecondaryIndexPopulatedAsync();
+        Assert.IsFalse(result);
+    }
+
+    [TestMethod]
+    public async Task IsSecondaryIndexPopulatedAsync_ReturnsTrue_WhenEntriesExist()
+    {
+        var at   = new DateTimeOffset(2025, 1, 1, 2, 0, 0, TimeSpan.Zero);
+        var full = MakeFull("full-01", "mydb", at, anchor: 1000);
+        var repo = new BlobMetadataRepository(BuildMock([full]));
+        var result = await repo.IsSecondaryIndexPopulatedAsync();
+        Assert.IsTrue(result);
     }
 }
 

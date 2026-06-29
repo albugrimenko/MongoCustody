@@ -142,4 +142,24 @@ public interface IMongoCustodyService
     Task<Models.AuditReport> GenerateAuditReportAsync(
         Models.AuditReportRequest request,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Validates the secondary metadata index for consistency.
+    /// Non-destructive — safe to run on a live system.
+    /// </summary>
+    Task<Models.IndexValidationResult> ValidateIndexAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Rebuilds the secondary metadata index from manifests.
+    /// When <paramref name="dryRun"/> is <c>true</c>, reports what would change
+    /// without writing anything.
+    /// </summary>
+    Task<Models.IndexRebuildResult> RebuildIndexAsync(
+        bool dryRun = false,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns <c>true</c> if the secondary index contains at least one entry.
+    /// </summary>
+    Task<bool> IsSecondaryIndexPopulatedAsync(CancellationToken ct = default);
 }

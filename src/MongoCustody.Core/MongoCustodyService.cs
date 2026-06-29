@@ -552,4 +552,18 @@ public sealed class MongoCustodyService : IMongoCustodyService
         var engine = new AuditReportEngine(_metadata);
         return engine.RunAsync(request, ct);
     }
+
+    /// <inheritdoc />
+    public Task<Models.IndexValidationResult> ValidateIndexAsync(CancellationToken ct = default)
+        => _metadata.ValidateIndexAsync(ct);
+
+    /// <inheritdoc />
+    public Task<Models.IndexRebuildResult> RebuildIndexAsync(
+        bool dryRun = false,
+        CancellationToken ct = default)
+        => _metadata.RebuildIndexAsync(dryRun, ct);
+
+    /// <inheritdoc />
+    public Task<bool> IsSecondaryIndexPopulatedAsync(CancellationToken ct = default)
+        => _metadata.IsSecondaryIndexPopulatedAsync(ct);
 }

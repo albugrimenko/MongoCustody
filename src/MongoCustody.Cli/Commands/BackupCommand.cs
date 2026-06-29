@@ -142,6 +142,11 @@ internal static class BackupCommand
             try { svc = ServiceFactory.Build(configPath); }
             catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
 
+            if (!await svc.IsSecondaryIndexPopulatedAsync(ct))
+                Console.Error.WriteLine(
+                    "WARNING: Secondary metadata index is missing. " +
+                    "This operation will be slower. Run 'mongocustody index rebuild' to fix.");
+
             Console.Error.WriteLine($"Starting incremental backup of '{database}'…");
 
             IProgress<MongoCustody.Core.Models.OperationProgress>? progress = null;

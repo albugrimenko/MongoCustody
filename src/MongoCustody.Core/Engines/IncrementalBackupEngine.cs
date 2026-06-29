@@ -140,10 +140,12 @@ internal sealed class IncrementalBackupEngine
                 "No full or checkpoint backup found. Run a full backup before running an incremental."),
                 backupId);
 
+        int q = ((chainRoot.CompletedAtUtc.Month - 1) / 3) + 1;
         int chainDepth;
         try
         {
-            chainDepth = await CountIncrementalsSinceAsync(chainRoot, databaseName, ct)
+            chainDepth = await _metadata.CountIncrementalsSinceAsync(
+                databaseName, chainRoot.CompletedAtUtc.Year, q, chainRoot.CompletedAtUtc, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -331,36 +333,6 @@ internal sealed class IncrementalBackupEngine
     // ------------------------------------------------------------------ //
     //  Helpers
     // ------------------------------------------------------------------ //
-
-    /// <summary>
-    /// Counts incremental manifests that exist under the chain root's
-    /// incremental prefix and whose <c>anchorTs</c> is greater than the
-    /// chain root's <c>anchorTs</c>.
-    /// </summary>
-    private async Task<int> CountIncrementalsSinceAsync(
-        BackupRecord chainRoot,
-        string databaseName,
-        CancellationToken ct)
-    {
-        var rootId = ExtractBackupId(chainRoot.BackupFolder);
-        var prefix = BackupPathBuilder.IncrementalPrefixForChainRoot(chainRoot.CompletedAtUtc, rootId);
-
-        int count = 0;
-        await foreach (var folder in _storage.ListFoldersAsync(prefix, ct).ConfigureAwait(false))
-        {
-            var record = await _metadata
-                .GetBackupRecordByFolderAsync(folder, ct)
-                .ConfigureAwait(false);
-
-            if (record is null) continue;
-            if (!string.Equals(record.DatabaseName, databaseName,
-                    StringComparison.OrdinalIgnoreCase)) continue;
-            if (record.AnchorTs > chainRoot.AnchorTs)
-                count++;
-        }
-
-        return count;
-    }
 
     private static BackupRecord? PickLatest(params BackupRecord?[] candidates)
         => candidates

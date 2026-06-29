@@ -150,6 +150,11 @@ internal static class RestoreCommand
                 }
             }
 
+            if (!await svc.IsSecondaryIndexPopulatedAsync(ct))
+                Console.Error.WriteLine(
+                    "WARNING: Secondary metadata index is missing. " +
+                    "This operation will be slower. Run 'mongocustody index rebuild' to fix.");
+
             // --- Execute the restore ---
             Console.Error.WriteLine(
                 $"Starting restore of '{database}' → '{targetDatabase}' " +

@@ -151,6 +151,69 @@ public sealed class StoragePathHelperTests
         Assert.IsNull(result);
     }
 
+    // ------------------------------------------------------------------ //
+    //  Secondary index paths
+    // ------------------------------------------------------------------ //
+
+    [TestMethod]
+    public void SecondaryIndexFolderPath_HasCorrectFormat()
+    {
+        var at   = new DateTimeOffset(2025, 4, 15, 12, 0, 0, TimeSpan.Zero);
+        var path = StoragePathHelper.SecondaryIndexFolderPath(2025, 2, "full", "mydb", at, "abc-123");
+        Assert.AreEqual("_index/by-quarter/2025/Q2/full/mydb/2025-04-15T1200Z-abc-123/", path);
+    }
+
+    [TestMethod]
+    public void SecondaryIndexEntryBlobPath_EndsWithEntryJson()
+    {
+        var at   = new DateTimeOffset(2025, 4, 15, 12, 0, 0, TimeSpan.Zero);
+        var path = StoragePathHelper.SecondaryIndexEntryBlobPath(2025, 2, "full", "mydb", at, "abc-123");
+        Assert.IsTrue(path.EndsWith("entry.json"), $"Expected path ending with entry.json, got: {path}");
+    }
+
+    [TestMethod]
+    [DataRow("_index/by-quarter/2025/Q2/incremental/mydb/2025-06-01T1000Z-id-001/",
+             "2025-06-01", 10, 0, "id-001")]
+    [DataRow("_index/by-quarter/2025/Q1/full/db/2025-01-01T0200Z-full-99/",
+             "2025-01-01", 2, 0, "full-99")]
+    public void ParseSecondaryIndexFolder_RoundTrips(
+        string folderPath, string expectedDate, int hour, int min, string expectedId)
+    {
+        var result = StoragePathHelper.ParseSecondaryIndexFolder(folderPath);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(expectedDate, result!.Value.CompletedAt.ToString("yyyy-MM-dd"));
+        Assert.AreEqual(hour, result.Value.CompletedAt.Hour);
+        Assert.AreEqual(expectedId, result.Value.BackupId);
+    }
+
+    [TestMethod]
+    [DataRow("_index/by-quarter/2025/Q1/full/mydb/not-a-valid-folder/")]
+    [DataRow("_index/by-quarter/2025/Q1/full/mydb/")]
+    public void ParseSecondaryIndexFolder_ReturnsNull_ForInvalidSegment(string folderPath)
+    {
+        var result = StoragePathHelper.ParseSecondaryIndexFolder(folderPath);
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public void SecondaryIndexFolders_HaveLexicographicChronologicalOrder()
+    {
+        var dates = new[]
+        {
+            new DateTimeOffset(2025, 1, 9, 10, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2025, 1, 3, 10, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2025, 1, 15, 10, 0, 0, TimeSpan.Zero)
+        };
+        var folders = dates.Select((d, i) =>
+            StoragePathHelper.SecondaryIndexFolderPath(2025, 1, "incremental", "db", d, $"id-{i:D3}"))
+            .ToArray();
+
+        var sorted = folders.OrderBy(f => f).ToArray();
+        Assert.IsTrue(sorted[0].Contains("2025-01-03"), $"Expected Jan 3 first, got {sorted[0]}");
+        Assert.IsTrue(sorted[1].Contains("2025-01-09"), $"Expected Jan 9 second, got {sorted[1]}");
+        Assert.IsTrue(sorted[2].Contains("2025-01-15"), $"Expected Jan 15 third, got {sorted[2]}");
+    }
+
     [TestMethod]
     public void IncrementalAndCheckpointFolders_HaveLexicographicChronologicalOrder()
     {

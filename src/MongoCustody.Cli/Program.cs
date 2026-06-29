@@ -9,5 +9,6 @@ root.Add(RestoreCommand.Build());
 root.Add(BackupsCommand.Build());
 root.Add(ValidateCommand.Build());
 root.Add(ReportCommand.Build());
+root.Add(IndexCommand.Build());
 
 return await root.Parse(args).InvokeAsync(new InvocationConfiguration(), CancellationToken.None);

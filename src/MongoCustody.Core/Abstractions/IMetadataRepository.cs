@@ -106,6 +106,25 @@ public interface IMetadataRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Counts incremental backups for <paramref name="databaseName"/> whose
+    /// <c>completedAtUtc</c> is after <paramref name="chainRootCompletedAt"/>,
+    /// searching the secondary index for the given quarter. Uses folder-name
+    /// timestamps — no manifest or entry reads.
+    /// </summary>
+    Task<int> CountIncrementalsSinceAsync(
+        string databaseName,
+        int year,
+        int quarter,
+        DateTimeOffset chainRootCompletedAt,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns <c>true</c> if the secondary index contains at least one entry.
+    /// Used by CLI commands to detect missing index and suggest a rebuild.
+    /// </summary>
+    Task<bool> IsSecondaryIndexPopulatedAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// Reads a <see cref="BackupRecord"/> manifest directly by folder path.
     /// Used during audit report generation to annotate restore chain steps
     /// with backup type, date, and document counts.
@@ -113,6 +132,21 @@ public interface IMetadataRepository
     /// </summary>
     Task<BackupRecord?> GetBackupRecordByFolderAsync(
         string folderPath,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Validates the secondary index for consistency: checks for dangling index
+    /// entries (no manifest) and unindexed manifests (no index entry). Non-destructive.
+    /// </summary>
+    Task<Models.IndexValidationResult> ValidateIndexAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Rebuilds the secondary index from manifests. Adds missing entries and removes
+    /// orphaned entries. When <paramref name="dryRun"/> is <c>true</c>, reports what
+    /// would change without writing anything.
+    /// </summary>
+    Task<Models.IndexRebuildResult> RebuildIndexAsync(
+        bool dryRun = false,
         CancellationToken ct = default);
 
     /// <summary>

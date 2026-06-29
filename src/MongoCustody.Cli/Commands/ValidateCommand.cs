@@ -220,6 +220,11 @@ internal static class ValidateCommand
             try { levels = ParseLevels(levelStrings); }
             catch (ArgumentException ex) { Console.Error.WriteLine($"Error: {ex.Message}"); return 2; }
 
+            if (!await svc.IsSecondaryIndexPopulatedAsync(ct))
+                Console.Error.WriteLine(
+                    "WARNING: Secondary metadata index is missing. " +
+                    "This operation will be slower. Run 'mongocustody index rebuild' to fix.");
+
             Console.Error.WriteLine(
                 $"Validating restore chain for '{database}' as of {date:u} at level(s): {levels}…");
 
