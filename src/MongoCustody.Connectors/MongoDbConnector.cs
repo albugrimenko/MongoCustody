@@ -110,7 +110,7 @@ public sealed class MongoDbConnector : IBackupSourceConnector
         var dbCfg = GetDatabaseConfig(databaseName);
         long queryFromTs = fromTimestamp - bufferSeconds;
         var filter = Builders<BsonDocument>.Filter.Gt(dbCfg.TimestampAttribute, queryFromTs);
-        var sort = Builders<BsonDocument>.Sort.Ascending(dbCfg.TimestampAttribute).Ascending("_id");
+        var sort = Builders<BsonDocument>.Sort.Ascending("_id");
         var options = new FindOptions<BsonDocument>
         {
             Sort = sort,

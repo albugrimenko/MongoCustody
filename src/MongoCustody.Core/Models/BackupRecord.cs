@@ -45,6 +45,7 @@ public sealed class BackupRecord
     /// <c>null</c> for full backups (they start a new chain).
     /// </summary>
     [JsonPropertyName("parentFolder")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentFolder { get; set; }
 
     /// <summary>
@@ -98,6 +99,7 @@ public sealed class BackupRecord
     /// <c>null</c> for all other types.
     /// </summary>
     [JsonPropertyName("weekNumber")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? WeekNumber { get; set; }
 
     /// <summary>Serialisation format of the chunk blobs.</summary>
