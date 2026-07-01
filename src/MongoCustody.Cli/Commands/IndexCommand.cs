@@ -74,8 +74,10 @@ internal static class IndexCommand
     {
         var configOpt  = CommonOptions.Config();
         var outputOpt  = CommonOptions.Output();
-        var dryRunOpt  = new Option<bool>("--dry-run",
-            "Report what would change without writing anything.");
+        var dryRunOpt  = new Option<bool>("--dry-run")
+        {
+            Description = "Report what would change without writing anything."
+        };
 
         var cmd = new Command("rebuild",
             "Rebuild the secondary index from manifests. " +
