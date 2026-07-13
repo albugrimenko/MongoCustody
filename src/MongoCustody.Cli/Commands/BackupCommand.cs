@@ -84,6 +84,7 @@ internal static class BackupCommand
             }
             else
             {
+                Console.WriteLine();
                 Output.WriteSeparator();
                 Console.WriteLine($"Backup ID  : {result.BackupId}");
                 Console.WriteLine($"Status     : {result.Status}");
@@ -197,6 +198,7 @@ internal static class BackupCommand
             }
             else
             {
+                Console.WriteLine();
                 Output.WriteSeparator();
                 Console.WriteLine($"Backup ID  : {result.BackupId}");
                 Console.WriteLine($"Status     : {result.Status}");

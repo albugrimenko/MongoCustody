@@ -203,6 +203,7 @@ internal static class RestoreCommand
             }
             else
             {
+                Console.WriteLine();
                 Output.WriteSeparator();
                 Console.WriteLine($"Status     : {result.Status}");
                 Console.WriteLine($"Started    : {result.StartedAtUtc:u}");
@@ -237,6 +238,7 @@ internal static class RestoreCommand
     {
         if (format == OutputFormat.Json) return; // JSON output handled by caller if needed
 
+        Console.WriteLine();
         Output.WriteSeparator();
         Console.WriteLine($"Restore chain for '{preview.DatabaseName}'");
         Console.WriteLine($"  Requested : {preview.RequestedDate:u}");
