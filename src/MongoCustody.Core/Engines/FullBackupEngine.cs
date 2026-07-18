@@ -67,7 +67,7 @@ internal sealed class FullBackupEngine
         string? overallFailure = null;
 
         var dbTasks = databases
-            .Select(dbName => RunForDatabaseAsync(dbName, request.TriggeredBy, correlationId, progress, ct))
+            .Select(dbName => RunForDatabaseAsync(dbName, request.TriggeredBy, correlationId, request.Label, progress, ct))
             .ToList();
         var dbResultTuples = await Task.WhenAll(dbTasks).ConfigureAwait(false);
 
@@ -107,6 +107,7 @@ internal sealed class FullBackupEngine
         string databaseName,
         string triggeredBy,
         string correlationId,
+        string? label,
         IProgress<OperationProgress>? progress,
         CancellationToken ct)
     {
@@ -209,7 +210,8 @@ internal sealed class FullBackupEngine
             Format          = _config.Policy.BackupFormat,
             Collections     = collRecords,
             TriggeredBy     = triggeredBy,
-            CorrelationId   = correlationId
+            CorrelationId   = correlationId,
+            Label           = label
         };
 
         try

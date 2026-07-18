@@ -94,6 +94,8 @@ internal static class MarkdownReportRenderer
             sb.AppendLine("| Field | Value |");
             sb.AppendLine("|---|---|");
             sb.AppendLine($"| Backup ID | `{b.BackupId}` |");
+            if (b.Label is not null)
+                sb.AppendLine($"| Label | {EscapeMd(b.Label)} |");
             sb.AppendLine($"| Quarter | {b.QuarterLabel} |");
             sb.AppendLine($"| Folder | `{EscapeMd(b.BackupFolder)}` |");
             sb.AppendLine($"| Collections | {b.Collections.Count:N0} |");

@@ -78,6 +78,7 @@ internal static class BackupsCommand
                     {
                         backupId        = r.BackupId,
                         database        = r.DatabaseName,
+                        label           = r.Label,
                         completedAt     = r.CompletedAtUtc,
                         folder          = r.BackupFolder,
                         quarter         = r.QuarterLabel,
@@ -117,6 +118,8 @@ internal static class BackupsCommand
 
                         Console.WriteLine($"  {r.BackupId}");
                         Console.WriteLine($"    Database  : {r.DatabaseName}");
+                        if (r.Label is not null)
+                            Console.WriteLine($"    Label     : {r.Label}");
                         Console.WriteLine($"    Completed : {r.CompletedAtUtc:u}");
                         Console.WriteLine($"    Quarter   : {r.QuarterLabel}");
                         Console.WriteLine($"    Folder    : {r.BackupFolder}");

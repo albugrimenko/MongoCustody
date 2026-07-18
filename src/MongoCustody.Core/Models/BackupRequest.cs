@@ -27,4 +27,11 @@ public sealed class BackupRequest
     /// A new GUID is generated automatically if not provided.
     /// </summary>
     public string? CorrelationId { get; set; }
+
+    /// <summary>
+    /// Optional free-text label describing why this backup was created.
+    /// Recorded in the manifest for auditing and filtering purposes.
+    /// Example: <c>"pre-upgrade snapshot"</c>, <c>"before schema migration v3"</c>.
+    /// </summary>
+    public string? Label { get; set; }
 }

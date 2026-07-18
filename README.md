@@ -18,6 +18,7 @@ MongoCustody implements a hybrid incremental backup strategy — quarterly full 
   - [As a CLI Tool](#as-a-cli-tool)
 - [Restore Procedure](#restore-procedure)
 - [Validation](#validation)
+- [Secondary Metadata Index](#secondary-metadata-index)
 - [HIPAA Compliance](#hipaa-compliance)
 - [Storage Layout](#storage-layout)
 - [Development](#development)
@@ -118,6 +119,7 @@ MongoCustody/
 │           ├── RestoreCommand
 │           ├── BackupsCommand
 │           ├── ValidateCommand
+│           ├── IndexCommand
 │           ├── ReportCommand
 │           └── HealthCommand
 │
@@ -298,8 +300,9 @@ public class BackupJob(IMongoCustodyService backupService)
         var result = await backupService.RunFullBackupAsync(
             new BackupRequest
             {
-                Databases = ["your-database"],
-                TriggeredBy = "scheduler"
+                Databases   = ["your-database"],
+                TriggeredBy = "scheduler",
+                Label       = "pre-upgrade snapshot"   // optional
             },
             // Optional: receive per-collection progress reports
             progress: new Progress<OperationProgress>(p =>
@@ -403,8 +406,11 @@ mongocustody backup full \
   --config mongocustody.json \
   --database your-database \
   [--triggered-by scheduler] \
+  [--label "pre-upgrade snapshot"] \
   [--output json]
 ```
+
+`--label` / `-l` is an optional free-text annotation stored in the manifest. Use it to explain why a manual backup was triggered (e.g. `"before schema migration v3"`, `"pre-deployment 2026-07-15"`). The label is displayed in `backups list` output and in audit reports.
 
 #### Incremental backup
 
@@ -412,12 +418,19 @@ mongocustody backup full \
 mongocustody backup incremental \
   --config mongocustody.json \
   --database your-database \
-  [--triggered-by scheduler]
+  [--triggered-by scheduler] \
+  [--label "pre-deployment incremental"]
 ```
 
 A chain-depth warning is printed to stderr (but the backup still completes) when the incremental count in the current quarter reaches `policy.maxIncrementalChainDepth`. Run `backup checkpoint` to reset the chain.
 
-#### Full backup
+If the secondary metadata index has not been built yet, a non-blocking warning is printed before the backup starts:
+
+```
+WARNING: Secondary metadata index is missing. This operation will be slower. Run 'mongocustody index rebuild' to fix.
+```
+
+#### Progress bar
 
 In text mode, a live progress bar is rendered to stderr while the backup runs:
 
@@ -529,7 +542,9 @@ mongocustody backups list \
   --output json
 ```
 
-Results are ordered oldest-first. The default summary shows backup ID, database, completion timestamp, quarter label, storage folder, and aggregate totals (collection count, document count, chunk count). Add `--detail` (`-v`) to expand each backup with its full per-collection breakdown.
+Results are ordered oldest-first. The default summary shows backup ID, database, label (when set), completion timestamp, quarter label, storage folder, and aggregate totals (collection count, document count, chunk count). Add `--detail` (`-v`) to expand each backup with its full per-collection breakdown.
+
+The `backupId` printed after a backup completes and shown in `backups list` is the per-database manifest ID — the same value written into `manifest.json`. It can be passed to `validate backup --backup-id` or used to look up the manifest via the library API.
 
 #### Validate a backup
 
@@ -833,6 +848,59 @@ mongocustody validate chain --database your-database --validate --level all
 
 ---
 
+## Secondary Metadata Index
+
+MongoCustody maintains a secondary metadata index alongside each manifest to eliminate O(N) manifest scans for common queries (latest backup, chain-depth counting, database listing).
+
+### How it works
+
+Every time a backup record is saved, three blobs are written in order:
+
+1. `manifest.json` — source of truth (written first)
+2. `_index/{backupId}` — O(1) lookup pointer by backup ID
+3. `_index/by-quarter/{year}/Q{q}/{type}/{db}/{yyyy-MM-ddTHHmmZ}-{backupId}/entry.json` — secondary index entry
+
+The folder name in the secondary index encodes the completion timestamp, so Azure Blob Storage listings are already in chronological order — no reads required to find the latest backup or to count incrementals since a given date.
+
+### Backward compatibility
+
+The secondary index is built lazily. Existing manifests written before the index was introduced have no secondary index entries. When the index is absent:
+
+- Backup, restore, and validate commands emit a non-blocking warning and fall back to the slower manifest-scan path.
+- Run `mongocustody index rebuild` once to populate the index from existing manifests.
+
+### CLI commands
+
+```bash
+# Check index health — reports dangling entries and unindexed manifests
+mongocustody index validate --config mongocustody.json
+
+# Preview what rebuild would do without writing anything
+mongocustody index rebuild --config mongocustody.json --dry-run
+
+# Rebuild the index (adds missing entries, removes orphaned entries)
+mongocustody index rebuild --config mongocustody.json
+```
+
+`index validate` exits with code `1` when the index is unhealthy. Use it in monitoring pipelines or after a disaster-recovery import.
+
+### Library API
+
+```csharp
+// Check whether the index needs to be built
+bool populated = await svc.IsSecondaryIndexPopulatedAsync(ct);
+
+// Validate index consistency
+IndexValidationResult result = await svc.ValidateIndexAsync(ct);
+Console.WriteLine($"Healthy: {result.IsHealthy}  Dangling: {result.DanglingEntries}  Unindexed: {result.UnindexedManifests}");
+
+// Rebuild (dryRun: true = report only, no writes)
+IndexRebuildResult rebuild = await svc.RebuildIndexAsync(dryRun: false, ct);
+Console.WriteLine($"Added: {rebuild.EntriesAdded}  Removed: {rebuild.OrphansRemoved}");
+```
+
+---
+
 ## HIPAA Compliance
 
 MongoCustody is designed to satisfy the following HIPAA Security Rule provisions for systems that handle ePHI:
@@ -888,13 +956,22 @@ All backup metadata lives in `manifest.json` files in Blob Storage. There is no 
 │           ├── ...
 │           └── manifest.json
 │
-└── checkpoint/
-    └── {year}/{quarter}/{fullBackupId}/
-        └── week-{nn}T{HHmmZ}/                   ← e.g. week-02T0200Z
-            ├── {db}.{collection}.part-001.bson.gz
-            ├── ...
-            └── manifest.json
+├── checkpoint/
+│   └── {year}/{quarter}/{fullBackupId}/
+│       └── week-{nn}T{HHmmZ}/                   ← e.g. week-02T0200Z
+│           ├── {db}.{collection}.part-001.bson.gz
+│           ├── ...
+│           └── manifest.json
+│
+└── _index/
+    ├── {backupId}                               ← O(1) lookup pointer → backup folder path
+    └── by-quarter/
+        └── {year}/Q{q}/{type}/{db}/
+            └── {yyyy-MM-ddTHHmmZ}-{backupId}/  ← folder name encodes timestamp for sort
+                └── entry.json                   ← {backupId, folder, anchorTs}
 ```
+
+The `_index/` prefix is reserved for MongoCustody internal use. `_index/{backupId}` blobs contain only the folder path (plain text) and are tiny. Secondary index entries (`entry.json`) are ~120 bytes each. Both are exempt from WORM retention since they are administrative metadata, not backup artifacts.
 
 All backup artifacts — chunks and manifests — are stored under a single container with WORM time-based retention. A folder containing chunks but no `manifest.json` represents a failed backup; a periodic cleanup process removes orphaned chunks older than 24 hours. Chunks must always be applied in ascending `part-NNN` order during restore. Lifecycle management policies tier blobs from Hot to Archive storage automatically based on age:
 
@@ -968,7 +1045,9 @@ Core logic tests (backup algorithm, restore chain resolution, validation rules, 
 
 Connector integration tests verify health checks, read/write round-trips, and end-to-end backup → validate → restore flows against real emulated infrastructure. They are gated by the `MONGOCUSTODY_INTEGRATION_TESTS` environment variable and tagged `Category=Integration`, so they never run in standard CI unless explicitly opted in.
 
-`BlobMetadataRepository` stores all backup and restore records as `manifest.json` files inside the same Blob Storage container used for backup artifacts. There is no separate metadata database. Lookup is done through a lightweight `_index/{backupId}` pointer blob written alongside each manifest.
+`BlobMetadataRepository` stores all backup and restore records as `manifest.json` files inside the same Blob Storage container used for backup artifacts. There is no separate metadata database. Lookup is done through a lightweight `_index/{backupId}` pointer blob written alongside each manifest, and through the secondary metadata index (`_index/by-quarter/…`) for efficient listing and chain-depth queries.
+
+Unit tests for `BlobMetadataRepository` use a mock `IStorageConnector` that populates both manifest folders and secondary index folders/entry blobs, so new tests cover `GetLatestBackupAsync`, `CountIncrementalsSinceAsync`, `ValidateIndexAsync`, and `RebuildIndexAsync` without any Azure infrastructure. `StoragePathHelperTests` covers secondary index path generation, parsing, and lexicographic sort correctness.
 
 ---
 
@@ -988,6 +1067,8 @@ The library is being built in the following sequence. Each phase is independentl
 | 8 | Checkpoint engine | Planned |
 | 9 | DI wiring and public API | Planned |
 | 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`, `report`); live progress bar for backup and restore; HIPAA audit report generation | ✅ Complete |
+| 11 | Secondary metadata index (`_index/by-quarter/…`); `index validate` and `index rebuild [--dry-run]` CLI commands; O(1) latest-backup lookup; zero-read chain-depth counting; non-blocking pre-flight warnings | ✅ Complete |
+| 12 | Backup label (`--label` / `-l`); per-database `backupId` in CLI output and JSON; `parentFolder` and `weekNumber` omitted from manifests when null; incremental export sorted by `_id` only (no `_ts` index required) | ✅ Complete |
 
 ---
 

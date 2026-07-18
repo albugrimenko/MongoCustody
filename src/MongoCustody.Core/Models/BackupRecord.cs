@@ -29,6 +29,14 @@ public sealed class BackupRecord
     [JsonPropertyName("backupId")]
     public string BackupId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional free-text label describing why this backup was created.
+    /// Useful for manual backups taken before deployments or major changes.
+    /// </summary>
+    [JsonPropertyName("label")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Label { get; set; }
+
     /// <summary>The type of backup this manifest describes.</summary>
     [JsonPropertyName("backupType")]
     public BackupType BackupType { get; set; }

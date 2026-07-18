@@ -24,12 +24,17 @@ internal static class BackupCommand
             Description       = "Label identifying the principal or scheduler that triggered the backup.",
             DefaultValueFactory = _ => Environment.UserName
         };
+        var labelOpt = new Option<string?>("--label", ["-l"])
+        {
+            Description = "Optional free-text label describing why this backup was created (e.g. \"pre-upgrade snapshot\")."
+        };
 
         var cmd = new Command("full",
             "Run a full backup of all collections in the specified database.");
         cmd.Add(configOpt);
         cmd.Add(databaseOpt);
         cmd.Add(triggeredByOpt);
+        cmd.Add(labelOpt);
         cmd.Add(outputOpt);
 
         cmd.SetAction(async (parseResult, ct) =>
@@ -37,6 +42,7 @@ internal static class BackupCommand
             var configPath  = parseResult.GetValue(configOpt)!;
             var database    = parseResult.GetValue(databaseOpt)!;
             var triggeredBy = parseResult.GetValue(triggeredByOpt)!;
+            var label       = parseResult.GetValue(labelOpt);
             var format      = parseResult.GetValue(outputOpt);
 
             IMongoCustodyService svc;
@@ -57,7 +63,8 @@ internal static class BackupCommand
                 {
                     Databases     = [database],
                     TriggeredBy   = triggeredBy,
-                    CorrelationId = Guid.NewGuid().ToString()
+                    CorrelationId = Guid.NewGuid().ToString(),
+                    Label         = label
                 },
                 progress, ct);
 
@@ -127,12 +134,17 @@ internal static class BackupCommand
             Description       = "Label identifying the principal or scheduler that triggered the backup.",
             DefaultValueFactory = _ => Environment.UserName
         };
+        var labelOpt = new Option<string?>("--label", ["-l"])
+        {
+            Description = "Optional free-text label describing why this backup was created (e.g. \"pre-deployment snapshot\")."
+        };
 
         var cmd = new Command("incremental",
             "Run an incremental backup — exports only documents changed since the previous backup.");
         cmd.Add(configOpt);
         cmd.Add(databaseOpt);
         cmd.Add(triggeredByOpt);
+        cmd.Add(labelOpt);
         cmd.Add(outputOpt);
 
         cmd.SetAction(async (parseResult, ct) =>
@@ -140,6 +152,7 @@ internal static class BackupCommand
             var configPath  = parseResult.GetValue(configOpt)!;
             var database    = parseResult.GetValue(databaseOpt)!;
             var triggeredBy = parseResult.GetValue(triggeredByOpt)!;
+            var label       = parseResult.GetValue(labelOpt);
             var format      = parseResult.GetValue(outputOpt);
 
             IMongoCustodyService svc;
@@ -165,7 +178,8 @@ internal static class BackupCommand
                 {
                     Databases     = [database],
                     TriggeredBy   = triggeredBy,
-                    CorrelationId = Guid.NewGuid().ToString()
+                    CorrelationId = Guid.NewGuid().ToString(),
+                    Label         = label
                 },
                 progress, ct);
 
