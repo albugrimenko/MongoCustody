@@ -65,7 +65,6 @@ internal static class BackupCommand
             {
                 Output.WriteJson(new
                 {
-                    backupId      = result.BackupId,
                     status        = result.Status.ToString(),
                     startedAt     = result.StartedAtUtc,
                     completedAt   = result.CompletedAtUtc,
@@ -74,6 +73,7 @@ internal static class BackupCommand
                     databases     = result.DatabaseResults.Select(db => new
                     {
                         database        = db.DatabaseName,
+                        backupId        = db.BackupId,
                         status          = db.Status.ToString(),
                         totalDocuments  = db.TotalDocuments,
                         collectionCount = db.CollectionCount,
@@ -86,7 +86,10 @@ internal static class BackupCommand
             {
                 Console.WriteLine();
                 Output.WriteSeparator();
-                Console.WriteLine($"Backup ID  : {result.BackupId}");
+                var printedId = result.DatabaseResults.Count == 1
+                    ? result.DatabaseResults[0].BackupId
+                    : result.BackupId;
+                Console.WriteLine($"Backup ID  : {printedId}");
                 Console.WriteLine($"Status     : {result.Status}");
                 Console.WriteLine($"Started    : {result.StartedAtUtc:u}");
                 Console.WriteLine($"Completed  : {result.CompletedAtUtc:u}");
@@ -178,7 +181,6 @@ internal static class BackupCommand
             {
                 Output.WriteJson(new
                 {
-                    backupId      = result.BackupId,
                     status        = result.Status.ToString(),
                     startedAt     = result.StartedAtUtc,
                     completedAt   = result.CompletedAtUtc,
@@ -186,13 +188,14 @@ internal static class BackupCommand
                     failureReason = result.FailureReason,
                     databases     = result.DatabaseResults.Select(db => new
                     {
-                        database        = db.DatabaseName,
-                        status          = db.Status.ToString(),
+                        database         = db.DatabaseName,
+                        backupId         = db.BackupId,
+                        status           = db.Status.ToString(),
                         changedDocuments = db.TotalDocuments,
-                        collectionCount = db.CollectionCount,
-                        compressedBytes = db.TotalCompressedBytes,
-                        warning         = db.Status == BackupStatus.Completed ? db.FailureReason : null,
-                        failureReason   = db.Status == BackupStatus.Failed    ? db.FailureReason : null
+                        collectionCount  = db.CollectionCount,
+                        compressedBytes  = db.TotalCompressedBytes,
+                        warning          = db.Status == BackupStatus.Completed ? db.FailureReason : null,
+                        failureReason    = db.Status == BackupStatus.Failed    ? db.FailureReason : null
                     })
                 });
             }
@@ -200,7 +203,10 @@ internal static class BackupCommand
             {
                 Console.WriteLine();
                 Output.WriteSeparator();
-                Console.WriteLine($"Backup ID  : {result.BackupId}");
+                var printedId = result.DatabaseResults.Count == 1
+                    ? result.DatabaseResults[0].BackupId
+                    : result.BackupId;
+                Console.WriteLine($"Backup ID  : {printedId}");
                 Console.WriteLine($"Status     : {result.Status}");
                 Console.WriteLine($"Started    : {result.StartedAtUtc:u}");
                 Console.WriteLine($"Completed  : {result.CompletedAtUtc:u}");
