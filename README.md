@@ -696,7 +696,18 @@ If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an
 
 `report.defaultOutputDirectory` sets the directory where auto-named report files are written when `--output-file` is not specified on the `report generate` command.
 
-> **Planned commands** (Phase 8): `backup checkpoint`.
+#### Run a weekly checkpoint
+
+```bash
+mongocustody backup checkpoint --database mydb
+mongocustody backup checkpoint --database mydb --label "week-3 checkpoint" --output json
+```
+
+A checkpoint merges all documents changed since the last full or checkpoint backup into a single deduplicated snapshot per collection. It collapses the incremental chain and resets the chain-depth counter.
+
+The command fails if no incremental backups exist since the last full or checkpoint — at least one incremental must be present before a checkpoint can be created.
+
+Options: same as `backup full` and `backup incremental` — `--triggered-by`, `--label` / `-l`, `--output`, `--config`.
 
 ---
 
@@ -1064,8 +1075,8 @@ The library is being built in the following sequence. Each phase is independentl
 | 5 | Full backup restore engine (restore chain replay; dry-run validation via `validate dry-run`) | ✅ Complete |
 | 6 | Incremental backup engine (configurable chain depth, chain-depth warning) | ✅ Complete |
 | 7 | Incremental restore and validation (manifest coherence, chain validation, `validate chain --validate`) | ✅ Complete |
-| 8 | Checkpoint engine | Planned |
-| 9 | DI wiring and public API | Planned |
+| 8 | Checkpoint engine (`backup checkpoint`); weekly deduplicated merge since last full or checkpoint; `sourceIncrementalFolders` manifest field; chain-depth reset | ✅ Complete |
+| 9 | DI wiring and public API | ✅ Complete (wired progressively through Phases 3–8) |
 | 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`, `report`); live progress bar for backup and restore; HIPAA audit report generation | ✅ Complete |
 | 11 | Secondary metadata index (`_index/by-quarter/…`); `index validate` and `index rebuild [--dry-run]` CLI commands; O(1) latest-backup lookup; zero-read chain-depth counting; non-blocking pre-flight warnings | ✅ Complete |
 | 12 | Backup label (`--label` / `-l`); per-database `backupId` in CLI output and JSON; `parentFolder` and `weekNumber` omitted from manifests when null; incremental export sorted by `_id` only (no `_ts` index required) | ✅ Complete |

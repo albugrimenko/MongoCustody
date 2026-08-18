@@ -1,4 +1,4 @@
-using MongoCustody.Core.Abstractions;
+﻿using MongoCustody.Core.Abstractions;
 using MongoCustody.Core.Engines;
 using MongoCustody.Core.Models;
 
@@ -19,7 +19,7 @@ namespace MongoCustody.Core;
 ///   <item>Phase 5 — Restore engine ✅ (<see cref="RestoreAsync"/>)</item>
 ///   <item>Phase 6 — Incremental backup engine ✅ (<see cref="RunIncrementalBackupAsync"/>)</item>
 ///   <item>Phase 7 — Incremental restore and validation ✅ (<see cref="ValidateRestoreChainAsync"/>)</item>
-///   <item>Phase 8 — Checkpoint engine — Planned</item>
+///   <item>Phase 8 — Checkpoint engine ✅ (<see cref="RunCheckpointAsync"/>)</item>
 /// </list>
 /// </summary>
 public sealed class MongoCustodyService : IMongoCustodyService
@@ -148,15 +148,17 @@ public sealed class MongoCustodyService : IMongoCustodyService
     }
 
     // ------------------------------------------------------------------ //
-    //  Phase 8 — Checkpoint (not yet implemented)
+    //  Phase 8 — Checkpoint
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
     public Task<BackupResult> RunCheckpointAsync(
         BackupRequest request,
         CancellationToken ct = default)
-        => throw new NotImplementedException(
-            "Checkpoint engine is planned for Phase 8.");
+    {
+        var engine = new CheckpointEngine(_source, _storage, _metadata, _config);
+        return engine.RunAsync(request, ct);
+    }
 
     // ------------------------------------------------------------------ //
     //  Phase 5 — Restore engine

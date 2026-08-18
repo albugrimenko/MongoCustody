@@ -11,6 +11,7 @@ internal static class BackupCommand
         var cmd = new Command("backup", "Backup operations.");
         cmd.Add(BuildFull());
         cmd.Add(BuildIncremental());
+        cmd.Add(BuildCheckpoint());
         return cmd;
     }
 
@@ -240,6 +241,109 @@ internal static class BackupCommand
                         Console.WriteLine($"       {db.FailureReason}");
                     else if (db.Status == BackupStatus.Completed && db.FailureReason is not null)
                         Console.WriteLine($"       WARNING: {db.FailureReason}");
+                }
+                Output.WriteSeparator();
+            }
+
+            return result.Status == BackupStatus.Completed ? 0 : 1;
+        });
+
+        return cmd;
+    }
+
+    private static Command BuildCheckpoint()
+    {
+        var configOpt      = CommonOptions.Config();
+        var databaseOpt    = CommonOptions.Database();
+        var outputOpt      = CommonOptions.Output();
+        var triggeredByOpt = new Option<string>("--triggered-by")
+        {
+            Description       = "Label identifying the principal or scheduler that triggered the backup.",
+            DefaultValueFactory = _ => Environment.UserName
+        };
+        var labelOpt = new Option<string?>("--label", ["-l"])
+        {
+            Description = "Optional free-text label describing why this checkpoint was created."
+        };
+
+        var cmd = new Command("checkpoint",
+            "Run a weekly checkpoint — a deduplicated snapshot of all changes since the last full or checkpoint backup.");
+        cmd.Add(configOpt);
+        cmd.Add(databaseOpt);
+        cmd.Add(triggeredByOpt);
+        cmd.Add(labelOpt);
+        cmd.Add(outputOpt);
+
+        cmd.SetAction(async (parseResult, ct) =>
+        {
+            var configPath  = parseResult.GetValue(configOpt)!;
+            var database    = parseResult.GetValue(databaseOpt)!;
+            var triggeredBy = parseResult.GetValue(triggeredByOpt)!;
+            var label       = parseResult.GetValue(labelOpt);
+            var format      = parseResult.GetValue(outputOpt);
+
+            IMongoCustodyService svc;
+            try { svc = ServiceFactory.Build(configPath); }
+            catch (InvalidOperationException ex) { return Output.ConfigError(ex.Message); }
+
+            Console.Error.WriteLine($"Starting checkpoint backup of '{database}'…");
+
+            var result = await svc.RunCheckpointAsync(
+                new BackupRequest
+                {
+                    Databases     = [database],
+                    TriggeredBy   = triggeredBy,
+                    CorrelationId = Guid.NewGuid().ToString(),
+                    Label         = label
+                },
+                ct);
+
+            if (format == OutputFormat.Json)
+            {
+                Output.WriteJson(new
+                {
+                    status        = result.Status.ToString(),
+                    startedAt     = result.StartedAtUtc,
+                    completedAt   = result.CompletedAtUtc,
+                    durationMs    = (result.CompletedAtUtc - result.StartedAtUtc).TotalMilliseconds,
+                    failureReason = result.FailureReason,
+                    databases     = result.DatabaseResults.Select(db => new
+                    {
+                        database        = db.DatabaseName,
+                        backupId        = db.BackupId,
+                        status          = db.Status.ToString(),
+                        totalDocuments  = db.TotalDocuments,
+                        collectionCount = db.CollectionCount,
+                        compressedBytes = db.TotalCompressedBytes,
+                        failureReason   = db.FailureReason
+                    })
+                });
+            }
+            else
+            {
+                Console.WriteLine();
+                Output.WriteSeparator();
+                var printedId = result.DatabaseResults.Count == 1
+                    ? result.DatabaseResults[0].BackupId
+                    : result.BackupId;
+                Console.WriteLine($"Backup ID  : {printedId}");
+                Console.WriteLine($"Status     : {result.Status}");
+                Console.WriteLine($"Started    : {result.StartedAtUtc:u}");
+                Console.WriteLine($"Completed  : {result.CompletedAtUtc:u}");
+                Console.WriteLine($"Duration   : {(result.CompletedAtUtc - result.StartedAtUtc).TotalSeconds:F1}s");
+                if (result.FailureReason is not null)
+                    Console.WriteLine($"Failure    : {result.FailureReason}");
+
+                foreach (var db in result.DatabaseResults)
+                {
+                    var icon = db.Status == BackupStatus.Completed ? "✓" : "✗";
+                    Console.WriteLine();
+                    Console.WriteLine(
+                        $"  {icon}  {db.DatabaseName,-30} {db.TotalDocuments,10:N0} docs  " +
+                        $"{db.CollectionCount} collection(s) with changes  " +
+                        $"{db.TotalCompressedBytes / 1024.0 / 1024.0:F1} MB compressed");
+                    if (db.FailureReason is not null)
+                        Console.WriteLine($"       {db.FailureReason}");
                 }
                 Output.WriteSeparator();
             }
