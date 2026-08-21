@@ -14,8 +14,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="MongoDB.Driver" Version="3.9.0" />
-    <PackageReference Include="SharpCompress" Version="0.49.1" />
+    <PackageReference Include="MongoDB.Driver" Version="3.10.0" />
+    <PackageReference Include="SharpCompress" Version="0.50.3" />
     <PackageReference Include="Snappier" Version="1.3.1" />
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.5.26302.115" />
   </ItemGroup>
