@@ -151,40 +151,56 @@ public sealed class BlobMetadataRepository : IMetadataRepository
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
+    public Task<IReadOnlyList<BackupRecord>> ListFullBackupsAsync(
         string? databaseName,
         DateTimeOffset from,
         DateTimeOffset to,
         CancellationToken ct = default)
+        => ListAllBackupsAsync(databaseName, from, to, [BackupType.Full], ct);
+
+    public async Task<IReadOnlyList<BackupRecord>> ListAllBackupsAsync(
+        string? databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        IReadOnlyCollection<BackupType>? types = null,
+        CancellationToken ct = default)
     {
-        var quarters = QuartersInRange(from, to);
+        // null types = all three; otherwise filter to requested set.
+        var typeNames = (types is null || types.Count == 0
+            ? [BackupType.Full, BackupType.Incremental, BackupType.Checkpoint]
+            : types)
+            .Select(t => t.ToString().ToLowerInvariant())
+            .ToHashSet();
+
+        var quarters   = QuartersInRange(from, to);
         var entryTasks = new List<Task<BackupRecord?>>();
 
         foreach (var (year, q) in quarters)
         {
-            // When databaseName is null we must search all databases; enumerate
-            // the type-level prefix and iterate per-database sub-prefixes.
-            var dbNames = await ListSecondaryIndexDatabasesAsync(year, q, "full", ct)
-                .ConfigureAwait(false);
-
-            foreach (var db in dbNames)
+            foreach (var typeName in typeNames)
             {
-                if (databaseName is not null &&
-                    !string.Equals(db, databaseName, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                // When databaseName is null enumerate all databases for this type.
+                var dbNames = await ListSecondaryIndexDatabasesAsync(year, q, typeName, ct)
+                    .ConfigureAwait(false);
 
-                var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(year, q, "full", db);
-
-                await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
-                                   .ConfigureAwait(false))
+                foreach (var db in dbNames)
                 {
-                    var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
-                    if (parsed is null) continue;
-                    if (parsed.Value.CompletedAt < from || parsed.Value.CompletedAt > to) continue;
+                    if (databaseName is not null &&
+                        !string.Equals(db, databaseName, StringComparison.OrdinalIgnoreCase))
+                        continue;
 
-                    // Capture for parallel manifest load.
-                    var captured = folder;
-                    entryTasks.Add(LoadManifestViaSecondaryIndexAsync(captured, ct));
+                    var prefix = StoragePathHelper.SecondaryIndexQuarterPrefix(year, q, typeName, db);
+
+                    await foreach (var folder in _storage.ListFoldersAsync(prefix, ct)
+                                       .ConfigureAwait(false))
+                    {
+                        var parsed = StoragePathHelper.ParseSecondaryIndexFolder(folder);
+                        if (parsed is null) continue;
+                        if (parsed.Value.CompletedAt < from || parsed.Value.CompletedAt > to) continue;
+
+                        var captured = folder;
+                        entryTasks.Add(LoadManifestViaSecondaryIndexAsync(captured, ct));
+                    }
                 }
             }
         }

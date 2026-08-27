@@ -546,6 +546,35 @@ Results are ordered oldest-first. The default summary shows backup ID, database,
 
 The `backupId` printed after a backup completes and shown in `backups list` is the per-database manifest ID — the same value written into `manifest.json`. It can be passed to `validate backup --backup-id` or used to look up the manifest via the library API.
 
+#### List all backups (full, incremental, and checkpoint)
+
+```bash
+# All backup types across all databases in a date range
+mongocustody backups list-all \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z
+
+# Filter to a specific type
+mongocustody backups list-all \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --type incremental
+
+mongocustody backups list-all \
+  --database your-database \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --type checkpoint
+
+# Machine-readable output
+mongocustody backups list-all \
+  --from 2025-01-01T00:00:00Z \
+  --to   2025-03-31T23:59:59Z \
+  --output json
+```
+
+`--type` (`-t`) accepts `full`, `incremental`, or `checkpoint`. Omit it to return all three types together. The JSON output includes `backupType`, `weekNumber` (checkpoints only), and `label` (when set). All other options (`--database`, `--detail`, `--output`, `--config`) work identically to `backups list`.
+
 #### Validate a backup
 
 ```bash
@@ -1080,6 +1109,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 10 | CLI tool (`health`, `backup full`, `restore`, `backups list`, `validate`, `report`); live progress bar for backup and restore; HIPAA audit report generation | ✅ Complete |
 | 11 | Secondary metadata index (`_index/by-quarter/…`); `index validate` and `index rebuild [--dry-run]` CLI commands; O(1) latest-backup lookup; zero-read chain-depth counting; non-blocking pre-flight warnings | ✅ Complete |
 | 12 | Backup label (`--label` / `-l`); per-database `backupId` in CLI output and JSON; `parentFolder` and `weekNumber` omitted from manifests when null; incremental export sorted by `_id` only (no `_ts` index required) | ✅ Complete |
+| 13 | `backups list-all` CLI command; `ListAllBackupsAsync` API with optional `--type` filter (`full`, `incremental`, `checkpoint`); `ListFullBackupsAsync` refactored as a delegate | ✅ Complete |
 
 ---
 

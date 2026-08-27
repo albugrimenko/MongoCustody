@@ -86,6 +86,21 @@ public interface IMongoCustodyService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all completed backups of the specified <paramref name="types"/>
+    /// whose <see cref="Models.BackupRecord.CompletedAtUtc"/> falls within
+    /// [<paramref name="from"/>, <paramref name="to"/>] inclusive, ordered
+    /// oldest-first. When <paramref name="databaseName"/> is <c>null</c>,
+    /// backups for all databases are returned. Pass <c>null</c> for
+    /// <paramref name="types"/> to return all backup types.
+    /// </summary>
+    Task<IReadOnlyList<Models.BackupRecord>> ListAllBackupsAsync(
+        string? databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        IReadOnlyCollection<Models.BackupType>? types = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Resolves and returns the ordered restore chain for a target date
     /// without performing any data operations (dry-run / preview).
     /// </summary>

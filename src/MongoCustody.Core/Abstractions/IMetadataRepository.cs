@@ -87,6 +87,21 @@ public interface IMetadataRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Returns all completed backups of the specified <paramref name="types"/>
+    /// whose <see cref="BackupRecord.CompletedAtUtc"/> falls within
+    /// [<paramref name="from"/>, <paramref name="to"/>] inclusive.
+    /// When <paramref name="databaseName"/> is <c>null</c>, records for all
+    /// databases are returned. Results are ordered oldest-first.
+    /// Pass <c>null</c> for <paramref name="types"/> to return all types.
+    /// </summary>
+    Task<IReadOnlyList<BackupRecord>> ListAllBackupsAsync(
+        string? databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        IReadOnlyCollection<BackupType>? types = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Returns all <see cref="RestoreRecord"/>s whose
     /// <see cref="RestoreRecord.RequestedAtUtc"/> falls within
     /// [<paramref name="from"/>, <paramref name="to"/>] inclusive.

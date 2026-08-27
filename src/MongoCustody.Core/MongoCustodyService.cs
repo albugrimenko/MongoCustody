@@ -477,7 +477,7 @@ public sealed class MongoCustodyService : IMongoCustodyService
     }
 
     // ------------------------------------------------------------------ //
-    //  Full backup listing
+    //  Backup listing
     // ------------------------------------------------------------------ //
 
     /// <inheritdoc />
@@ -487,6 +487,15 @@ public sealed class MongoCustodyService : IMongoCustodyService
         DateTimeOffset to,
         CancellationToken ct = default)
         => _metadata.ListFullBackupsAsync(databaseName, from, to, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<BackupRecord>> ListAllBackupsAsync(
+        string? databaseName,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        IReadOnlyCollection<Models.BackupType>? types = null,
+        CancellationToken ct = default)
+        => _metadata.ListAllBackupsAsync(databaseName, from, to, types, ct);
 
     // ------------------------------------------------------------------ //
     //  Restore chain preview (used by Phase 5 and CLI)
