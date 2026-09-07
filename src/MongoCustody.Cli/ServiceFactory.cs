@@ -72,7 +72,7 @@ internal static class ServiceFactory
         var metadata       = new BlobMetadataRepository(storage);
         var restoreFactory = new MongoDbRestoreTargetConnectorFactory();
 
-        return new MongoCustodyService(source, storage, metadata, config, restoreFactory);
+        return new MongoCustodyService(source, storage, metadata, config, restoreFactory, secretProvider);
     }
 
     internal static async Task<string?> ResolveSecretAsync(

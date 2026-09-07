@@ -24,24 +24,27 @@ namespace MongoCustody.Core;
 /// </summary>
 public sealed class MongoCustodyService : IMongoCustodyService
 {
-    private readonly IBackupSourceConnector         _source;
-    private readonly IStorageConnector              _storage;
-    private readonly IMetadataRepository            _metadata;
-    private readonly MongoCustodyConfiguration      _config;
+    private readonly IBackupSourceConnector          _source;
+    private readonly IStorageConnector               _storage;
+    private readonly IMetadataRepository             _metadata;
+    private readonly MongoCustodyConfiguration       _config;
     private readonly IRestoreTargetConnectorFactory? _restoreTargetFactory;
+    private readonly ISecretProvider?                _secretProvider;
 
     public MongoCustodyService(
         IBackupSourceConnector           source,
         IStorageConnector                storage,
         IMetadataRepository              metadata,
         MongoCustodyConfiguration        config,
-        IRestoreTargetConnectorFactory?  restoreTargetFactory = null)
+        IRestoreTargetConnectorFactory?  restoreTargetFactory = null,
+        ISecretProvider?                 secretProvider       = null)
     {
         _source               = source;
         _storage              = storage;
         _metadata             = metadata;
         _config               = config;
         _restoreTargetFactory = restoreTargetFactory;
+        _secretProvider       = secretProvider;
     }
 
     // ------------------------------------------------------------------ //
@@ -309,6 +312,38 @@ public sealed class MongoCustodyService : IMongoCustodyService
         IProgress<Models.OperationProgress>? progress = null,
         CancellationToken ct = default)
     {
+        // Auto-fill target connection string and database from DryRun config when
+        // the caller left them blank. The key is resolved via the registered
+        // ISecretProvider so it honours the same Secrets configuration (environment
+        // variables or Azure Key Vault) as the rest of the library.
+        if (string.IsNullOrWhiteSpace(request.TargetConnectionString) &&
+            _config.DryRun is { } dryRunCfg)
+        {
+            if (_secretProvider is null)
+                return QuickDryRunFail(
+                    "ISecretProvider was not supplied to MongoCustodyService. " +
+                    "Pass it as the secretProvider constructor argument so the " +
+                    "DryRun.ConnectionStringKey can be resolved at runtime.",
+                    request);
+
+            var resolved = await _secretProvider
+                .GetSecretAsync(dryRunCfg.ConnectionStringKey, ct)
+                .ConfigureAwait(false);
+
+            if (string.IsNullOrWhiteSpace(resolved))
+                return QuickDryRunFail(
+                    $"DryRun.ConnectionStringKey '{dryRunCfg.ConnectionStringKey}' " +
+                    "resolved to an empty value. Verify the secret exists in the " +
+                    "configured secret provider.",
+                    request);
+
+            request.TargetConnectionString = resolved;
+
+            if (string.IsNullOrWhiteSpace(request.TargetDatabaseName) &&
+                !string.IsNullOrWhiteSpace(dryRunCfg.DatabaseName))
+                request.TargetDatabaseName = dryRunCfg.DatabaseName;
+        }
+
         // Flag so RestoreAsync stamps IsDryRun on the RestoreRecord.
         request.IsDryRun = true;
         RestoreResult result;
@@ -388,6 +423,20 @@ public sealed class MongoCustodyService : IMongoCustodyService
         }
 
         return result;
+    }
+
+    private static RestoreResult QuickDryRunFail(string reason, RestoreRequest request)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new RestoreResult
+        {
+            Status         = BackupStatus.Failed,
+            StartedAtUtc   = now,
+            CompletedAtUtc = now,
+            TargetDate     = request.TargetDate,
+            FailureReason  = reason,
+            CorrelationId  = request.CorrelationId ?? Guid.NewGuid().ToString()
+        };
     }
 
     private async Task<RestoreResult> FinaliseAuditAndReturnAsync(

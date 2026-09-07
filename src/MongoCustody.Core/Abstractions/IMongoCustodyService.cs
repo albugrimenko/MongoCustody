@@ -130,6 +130,15 @@ public interface IMongoCustodyService
     /// Runs a full restore dry-run cycle: restore → verify counts → clean up.
     /// The <see cref="Models.RestoreRecord"/> written to storage has
     /// <c>IsDryRun = true</c> and is included in date-range audit reports.
+    /// <para>
+    /// When <see cref="Models.RestoreRequest.TargetConnectionString"/> is blank,
+    /// the service automatically resolves it from
+    /// <see cref="Models.MongoCustodyConfiguration.DryRun"/> using the configured
+    /// <see cref="ISecretProvider"/>. <see cref="Models.RestoreRequest.TargetDatabaseName"/>
+    /// is similarly filled from <see cref="Models.DryRunConfiguration.DatabaseName"/>
+    /// when blank. This lets callers omit both fields and rely entirely on the
+    /// configuration supplied at construction time.
+    /// </para>
     /// </summary>
     Task<RestoreResult> RunDryRunAsync(
         RestoreRequest request,

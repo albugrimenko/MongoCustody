@@ -723,6 +723,8 @@ If cleanup fails, the audit record is updated with `cleanupStatus: Failed` so an
 
 `connectionStringKey` follows the same convention as `mongoConnectionStringKey` and `storageConnectionStringKey` — it is the environment variable name (or Key Vault secret name) that holds the actual connection string, never the connection string itself.
 
+**Auto-resolution from config (library usage)** — when calling `RunDryRunAsync` through the library directly, you may omit `TargetConnectionString` and `TargetDatabaseName` from the `RestoreRequest`. The service automatically resolves `TargetConnectionString` from `DryRunConfiguration.ConnectionStringKey` via the configured `ISecretProvider`, and fills `TargetDatabaseName` from `DryRunConfiguration.DatabaseName` when blank. The same `Secrets` configuration governs secret resolution for both the source connector and the dry-run target. If no `ISecretProvider` was supplied at construction time, or the key resolves to an empty value, `RunDryRunAsync` returns a failed result immediately without writing any audit records.
+
 `report.defaultOutputDirectory` sets the directory where auto-named report files are written when `--output-file` is not specified on the `report generate` command.
 
 #### Run a weekly checkpoint
@@ -1110,6 +1112,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 11 | Secondary metadata index (`_index/by-quarter/…`); `index validate` and `index rebuild [--dry-run]` CLI commands; O(1) latest-backup lookup; zero-read chain-depth counting; non-blocking pre-flight warnings | ✅ Complete |
 | 12 | Backup label (`--label` / `-l`); per-database `backupId` in CLI output and JSON; `parentFolder` and `weekNumber` omitted from manifests when null; incremental export sorted by `_id` only (no `_ts` index required) | ✅ Complete |
 | 13 | `backups list-all` CLI command; `ListAllBackupsAsync` API with optional `--type` filter (`full`, `incremental`, `checkpoint`); `ListFullBackupsAsync` refactored as a delegate | ✅ Complete |
+| 14 | Dry-run auto-resolution from `DryRunConfiguration`; `ISecretProvider` injected into `MongoCustodyService`; `TargetConnectionString` and `TargetDatabaseName` auto-filled from config when blank | ✅ Complete |
 
 ---
 
