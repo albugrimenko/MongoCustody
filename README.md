@@ -1113,6 +1113,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 12 | Backup label (`--label` / `-l`); per-database `backupId` in CLI output and JSON; `parentFolder` and `weekNumber` omitted from manifests when null; incremental export sorted by `_id` only (no `_ts` index required) | ✅ Complete |
 | 13 | `backups list-all` CLI command; `ListAllBackupsAsync` API with optional `--type` filter (`full`, `incremental`, `checkpoint`); `ListFullBackupsAsync` refactored as a delegate | ✅ Complete |
 | 14 | Dry-run auto-resolution from `DryRunConfiguration`; `ISecretProvider` injected into `MongoCustodyService`; `TargetConnectionString` and `TargetDatabaseName` auto-filled from config when blank | ✅ Complete |
+| 15 | Audit report expanded to all backup types (incremental + checkpoint); per-type breakdown in `AuditSummary`; Markdown renderer updated with Type/Week rows and "Backup Activity" section | ✅ Complete |
 
 ---
 

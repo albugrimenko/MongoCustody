@@ -44,7 +44,8 @@ public sealed class AuditReport
     public AuditSummary Summary { get; init; } = new();
 
     /// <summary>
-    /// Full backup records in chronological order. Empty in single-restore mode.
+    /// All backup records (full, incremental, checkpoint) in chronological order.
+    /// Empty in single-restore mode.
     /// </summary>
     [JsonPropertyName("backups")]
     public IReadOnlyList<BackupRecord> Backups { get; init; } = [];
@@ -57,11 +58,21 @@ public sealed class AuditReport
 /// <summary>Aggregate metrics across the report period.</summary>
 public sealed class AuditSummary
 {
-    [JsonPropertyName("backupsCompleted")]
-    public int BackupsCompleted { get; init; }
+    /// <summary>Full + incremental + checkpoint combined.</summary>
+    [JsonPropertyName("totalBackupsCompleted")]
+    public int TotalBackupsCompleted { get; init; }
 
-    [JsonPropertyName("backupsFailed")]
-    public int BackupsFailed { get; init; }
+    [JsonPropertyName("totalBackupsFailed")]
+    public int TotalBackupsFailed { get; init; }
+
+    [JsonPropertyName("fullBackupsCompleted")]
+    public int FullBackupsCompleted { get; init; }
+
+    [JsonPropertyName("incrementalBackupsCompleted")]
+    public int IncrementalBackupsCompleted { get; init; }
+
+    [JsonPropertyName("checkpointsCompleted")]
+    public int CheckpointsCompleted { get; init; }
 
     [JsonPropertyName("restoresCompleted")]
     public int RestoresCompleted { get; init; }

@@ -61,10 +61,13 @@ internal static class MarkdownReportRenderer
         sb.AppendLine("| Metric | Value |");
         sb.AppendLine("|---|---|");
 
-        if (s.BackupsCompleted + s.BackupsFailed > 0)
+        if (s.TotalBackupsCompleted + s.TotalBackupsFailed > 0)
         {
-            sb.AppendLine($"| Full backups completed | {s.BackupsCompleted:N0} |");
-            sb.AppendLine($"| Full backups failed | {s.BackupsFailed:N0} |");
+            sb.AppendLine($"| Backups completed (total) | {s.TotalBackupsCompleted:N0} |");
+            sb.AppendLine($"| — Full backups | {s.FullBackupsCompleted:N0} |");
+            sb.AppendLine($"| — Incremental backups | {s.IncrementalBackupsCompleted:N0} |");
+            sb.AppendLine($"| — Checkpoints | {s.CheckpointsCompleted:N0} |");
+            sb.AppendLine($"| Backups failed | {s.TotalBackupsFailed:N0} |");
             sb.AppendLine($"| Total collections backed up | {s.TotalCollectionsBacked:N0} |");
             sb.AppendLine($"| Total documents backed up | {s.TotalDocumentsBacked:N0} |");
         }
@@ -82,18 +85,22 @@ internal static class MarkdownReportRenderer
         StringBuilder sb,
         IReadOnlyList<BackupRecord> backups)
     {
-        sb.AppendLine("## Full Backup Activity");
+        sb.AppendLine("## Backup Activity");
         sb.AppendLine();
 
         foreach (var b in backups)
         {
-            var heading = $"{FmtLong(b.CompletedAtUtc)} — {b.DatabaseName} [COMPLETED]";
+            var typeTag = b.BackupType.ToString().ToUpperInvariant();
+            var heading = $"{FmtLong(b.CompletedAtUtc)} — {b.DatabaseName} [{typeTag}]";
             sb.AppendLine($"### {heading}");
             sb.AppendLine();
 
             sb.AppendLine("| Field | Value |");
             sb.AppendLine("|---|---|");
             sb.AppendLine($"| Backup ID | `{b.BackupId}` |");
+            sb.AppendLine($"| Type | {b.BackupType} |");
+            if (b.WeekNumber.HasValue)
+                sb.AppendLine($"| Week | {b.WeekNumber} |");
             if (b.Label is not null)
                 sb.AppendLine($"| Label | {EscapeMd(b.Label)} |");
             sb.AppendLine($"| Quarter | {b.QuarterLabel} |");

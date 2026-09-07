@@ -170,7 +170,7 @@ internal static class ReportCommand
             Console.WriteLine($"Audit Report — {report.From:yyyy-MM-dd} to {report.To:yyyy-MM-dd}");
             if (report.DatabaseFilter is not null)
                 Console.WriteLine($"  Database filter  : {report.DatabaseFilter}");
-            Console.WriteLine($"  Full backups     : {s.BackupsCompleted} completed, {s.BackupsFailed} failed");
+            Console.WriteLine($"  Backups          : {s.TotalBackupsCompleted} completed ({s.FullBackupsCompleted} full, {s.IncrementalBackupsCompleted} incremental, {s.CheckpointsCompleted} checkpoint), {s.TotalBackupsFailed} failed");
             Console.WriteLine($"  Restore ops      : {s.RestoresCompleted} completed, {s.RestoresFailed} failed");
             Console.WriteLine($"  Documents backed : {s.TotalDocumentsBacked:N0}");
         }

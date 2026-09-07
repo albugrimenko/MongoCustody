@@ -74,7 +74,7 @@ internal sealed class AuditReportEngine
         var to   = request.To!.Value;
 
         var backups  = await _metadata
-            .ListFullBackupsAsync(request.DatabaseName, from, to, ct)
+            .ListAllBackupsAsync(request.DatabaseName, from, to, types: null, ct)
             .ConfigureAwait(false);
 
         var restoreRecords = await _metadata
@@ -163,14 +163,17 @@ internal sealed class AuditReportEngine
 
         return new AuditSummary
         {
-            BackupsCompleted       = backups.Count,
-            BackupsFailed          = 0,
-            RestoresCompleted      = realRestores.Count(r => r.Status == BackupStatus.Completed),
-            RestoresFailed         = realRestores.Count(r => r.Status == BackupStatus.Failed),
-            DryRunsCompleted       = dryRuns.Count(r => r.Status == BackupStatus.Completed),
-            DryRunsFailed          = dryRuns.Count(r => r.Status == BackupStatus.Failed),
-            TotalCollectionsBacked = totalCollections,
-            TotalDocumentsBacked   = totalDocs,
+            TotalBackupsCompleted       = backups.Count,
+            TotalBackupsFailed          = 0,
+            FullBackupsCompleted        = backups.Count(b => b.BackupType == BackupType.Full),
+            IncrementalBackupsCompleted = backups.Count(b => b.BackupType == BackupType.Incremental),
+            CheckpointsCompleted        = backups.Count(b => b.BackupType == BackupType.Checkpoint),
+            RestoresCompleted           = realRestores.Count(r => r.Status == BackupStatus.Completed),
+            RestoresFailed              = realRestores.Count(r => r.Status == BackupStatus.Failed),
+            DryRunsCompleted            = dryRuns.Count(r => r.Status == BackupStatus.Completed),
+            DryRunsFailed               = dryRuns.Count(r => r.Status == BackupStatus.Failed),
+            TotalCollectionsBacked      = totalCollections,
+            TotalDocumentsBacked        = totalDocs,
         };
     }
 }
