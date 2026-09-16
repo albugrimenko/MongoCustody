@@ -101,6 +101,18 @@ public interface IRestoreTargetConnector : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Drops <paramref name="collectionName"/> from <paramref name="databaseName"/>
+    /// if it exists. Safe to call when the collection is absent — the operation
+    /// completes without error. Used before creating unique indexes on a new
+    /// collection to flush any stale index registrations that Cosmos DB for
+    /// MongoDB retains across collection drop/re-create cycles.
+    /// </summary>
+    Task DropCollectionAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Drops all collections in <paramref name="databaseName"/>, returning
     /// it to an empty state. Used at the end of a dry-run to remove restored
     /// ePHI from the temporary target database.

@@ -210,6 +210,13 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
     }
 
     /// <inheritdoc />
+    public Task DropCollectionAsync(
+        string databaseName,
+        string collectionName,
+        CancellationToken ct = default)
+        => _client.GetDatabase(databaseName).DropCollectionAsync(collectionName, ct);
+
+    /// <inheritdoc />
     public async Task DropAllCollectionsAsync(
         string databaseName,
         CancellationToken ct = default)

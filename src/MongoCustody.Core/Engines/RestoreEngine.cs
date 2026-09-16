@@ -272,6 +272,13 @@ internal sealed class RestoreEngine
 
             if (!exists)
             {
+                // Drop before creating to flush any stale unique-index registration
+                // that Cosmos DB for MongoDB retains after a prior collection drop.
+                // On standard MongoDB this is a no-op when the collection is absent.
+                await _target
+                    .DropCollectionAsync(databaseName, collName, ct)
+                    .ConfigureAwait(false);
+
                 var uniqueIndexes = indexes.Where(i => i.IsUnique).ToList();
                 if (uniqueIndexes.Count > 0)
                     await _target

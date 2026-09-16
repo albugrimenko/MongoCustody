@@ -1114,6 +1114,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 13 | `backups list-all` CLI command; `ListAllBackupsAsync` API with optional `--type` filter (`full`, `incremental`, `checkpoint`); `ListFullBackupsAsync` refactored as a delegate | ✅ Complete |
 | 14 | Dry-run auto-resolution from `DryRunConfiguration`; `ISecretProvider` injected into `MongoCustodyService`; `TargetConnectionString` and `TargetDatabaseName` auto-filled from config when blank | ✅ Complete |
 | 15 | Audit report expanded to all backup types (incremental + checkpoint); per-type breakdown in `AuditSummary`; Markdown renderer updated with Type/Week rows and "Backup Activity" section | ✅ Complete |
+| 16 | Fix: dry-run unique-index error on Cosmos DB for MongoDB; `DropCollectionAsync` added to `IRestoreTargetConnector`; called before unique-index creation to flush stale constraint state | ✅ Complete |
 
 ---
 
