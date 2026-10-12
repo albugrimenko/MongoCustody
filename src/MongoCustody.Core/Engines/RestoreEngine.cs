@@ -113,6 +113,15 @@ internal sealed class RestoreEngine
         // recent index definitions for each collection.
         var mergedIndexMap = BuildMergedIndexMap(chain, collectionFilter);
 
+        // Shard key is declared once per database (Cosmos DB for MongoDB
+        // exposes no command to discover an existing collection's shard key,
+        // so it can't be captured per-collection at backup time — see
+        // DatabaseConfiguration.ShardKeyField) and applies uniformly to every
+        // collection restored into this database.
+        var shardKeyField = _config.Databases
+            .FirstOrDefault(d => string.Equals(d.DatabaseName, request.DatabaseName, StringComparison.OrdinalIgnoreCase))
+            ?.ShardKeyField;
+
         // Pre-compute total collection operations for progress reporting.
         int totalCollOps = chain.Sum(r => r.Collections.Count(c =>
             collectionFilter is null || collectionFilter.Contains(c.CollectionName)));
@@ -156,7 +165,7 @@ internal sealed class RestoreEngine
                         c.CollectionName, (IReadOnlyList<IndexDefinition>)[]);
 
                     return RestoreCollectionAsync(
-                            targetDb, c, semaphore, useInsert, indexes, ct)
+                            targetDb, c, semaphore, useInsert, indexes, shardKeyField, ct)
                         .ContinueWith(
                             task =>
                             {
@@ -248,12 +257,13 @@ internal sealed class RestoreEngine
     // ------------------------------------------------------------------ //
 
     private async Task<CollectionRestoreResult> RestoreCollectionAsync(
-        string                        databaseName,
-        CollectionBackupRecord        collRecord,
-        SemaphoreSlim                 semaphore,
-        bool                          useInsert,
+        string                         databaseName,
+        CollectionBackupRecord         collRecord,
+        SemaphoreSlim                  semaphore,
+        bool                           useInsert,
         IReadOnlyList<IndexDefinition> indexes,
-        CancellationToken             ct)
+        string?                        shardKeyField,
+        CancellationToken              ct)
     {
         bool acquired = false;
         try
@@ -264,31 +274,27 @@ internal sealed class RestoreEngine
             var collName = collRecord.CollectionName;
 
             // Determine whether the collection already exists in the target.
-            // New collections (not yet created) must have unique indexes applied
-            // before data is loaded — Cosmos DB for MongoDB enforces this.
+            // New collections (not yet created) must have their shard key and
+            // unique indexes applied at creation time — both Cosmos DB for
+            // MongoDB and sharded MongoDB clusters reject adding either
+            // afterward.
             bool exists = await _target
                 .CollectionExistsAsync(databaseName, collName, ct)
                 .ConfigureAwait(false);
 
+            string? warning = null;
             if (!exists)
             {
-                // Drop before creating to flush any stale unique-index registration
-                // that Cosmos DB for MongoDB retains after a prior collection drop.
-                // On standard MongoDB this is a no-op when the collection is absent.
-                await _target
-                    .DropCollectionAsync(databaseName, collName, ct)
-                    .ConfigureAwait(false);
-
                 var uniqueIndexes = indexes.Where(i => i.IsUnique).ToList();
-                if (uniqueIndexes.Count > 0)
-                    await _target
-                        .CreateIndexesAsync(databaseName, collName, uniqueIndexes, ct)
-                        .ConfigureAwait(false);
+                warning = await _target
+                    .CreateCollectionAsync(databaseName, collName, shardKeyField, uniqueIndexes, ct)
+                    .ConfigureAwait(false);
             }
-            // If the collection already exists its unique indexes are already in place.
-            // Adding a new unique index to a non-empty collection is not supported in
-            // Cosmos DB for MongoDB; such a scenario is surfaced as a restore warning
-            // in production but is not retried here.
+            // If the collection already exists its shard key and unique indexes are
+            // already in place. Adding either to a non-empty collection afterward is
+            // not supported by Cosmos DB for MongoDB or sharded MongoDB clusters; such
+            // a scenario is surfaced as a restore warning in production but is not
+            // retried here.
 
             long totalDocs = 0;
             foreach (var chunk in collRecord.Chunks.OrderBy(c => c.ChunkIndex))
@@ -302,7 +308,8 @@ internal sealed class RestoreEngine
             {
                 CollectionName    = collName,
                 DocumentsUpserted = totalDocs,
-                Status            = BackupStatus.Completed
+                Status            = BackupStatus.Completed,
+                Warning           = warning
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

@@ -64,4 +64,13 @@ public sealed class CollectionRestoreResult
 
     /// <summary>Failure detail if this collection failed to restore.</summary>
     public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// Non-fatal warning about this collection's restore — e.g. the backup
+    /// recorded a shard key that could not be applied because the restore
+    /// target is a standard MongoDB instance rather than Cosmos DB for
+    /// MongoDB. <see cref="Status"/> remains <see cref="BackupStatus.Completed"/>
+    /// when this is set.
+    /// </summary>
+    public string? Warning { get; set; }
 }

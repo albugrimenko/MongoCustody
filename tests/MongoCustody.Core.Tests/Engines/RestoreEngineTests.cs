@@ -25,10 +25,10 @@ public sealed class RestoreEngineTests
     private const string FolderPath   = "full/2025/Q1/backup-id";
     private const string BackupId     = "backup-id";
 
-    private static MongoCustodyConfiguration MakeConfig(int maxParallel = 2) => new()
+    private static MongoCustodyConfiguration MakeConfig(int maxParallel = 2, string? shardKeyField = null) => new()
     {
         StorageContainerName = "backups",
-        Databases            = [new DatabaseConfiguration { DatabaseName = DbName }],
+        Databases            = [new DatabaseConfiguration { DatabaseName = DbName, ShardKeyField = shardKeyField }],
         Policy               = new BackupPolicy
         {
             MaxParallelCollections = maxParallel,
@@ -109,6 +109,13 @@ public sealed class RestoreEngineTests
                 It.IsAny<IReadOnlyList<IndexDefinition>>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+
+        mock.Setup(t => t.CreateCollectionAsync(
+                It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<IndexDefinition>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string?)null);
 
         mock.Setup(t => t.DropCollectionAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -496,12 +503,13 @@ public sealed class RestoreEngineTests
         var createOrder = new List<string>();
 
         targetMock
-            .Setup(t => t.CreateIndexesAsync(
+            .Setup(t => t.CreateCollectionAsync(
                 DbName, CollName,
+                It.IsAny<string?>(),
                 It.Is<IReadOnlyList<IndexDefinition>>(l => l.Any(i => i.IsUnique)),
                 It.IsAny<CancellationToken>()))
             .Callback(() => createOrder.Add("unique"))
-            .Returns(Task.CompletedTask);
+            .ReturnsAsync((string?)null);
 
         targetMock
             .Setup(t => t.InsertManyAsync(
@@ -567,14 +575,15 @@ public sealed class RestoreEngineTests
 
         Assert.AreEqual(BackupStatus.Completed, result.Status);
 
-        // Unique index CreateIndexesAsync must NOT have been called.
+        // CreateCollectionAsync must NOT have been called — the collection already exists.
         targetMock.Verify(
-            t => t.CreateIndexesAsync(
+            t => t.CreateCollectionAsync(
                 DbName, CollName,
-                It.Is<IReadOnlyList<IndexDefinition>>(l => l.Any(i => i.IsUnique)),
+                It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<IndexDefinition>>(),
                 It.IsAny<CancellationToken>()),
             Times.Never,
-            "Unique index creation must be skipped for existing collections");
+            "Collection creation (and unique index application) must be skipped for existing collections");
     }
 
     [TestMethod]
@@ -650,6 +659,88 @@ public sealed class RestoreEngineTests
                 It.IsAny<CancellationToken>()),
             Times.Once,
             "Non-unique indexes must be created exactly once, after the last chain step");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_DatabaseShardKeyField_PassedToCreateCollectionAsync()
+    {
+        // Arrange — the database has a ShardKeyField configured (operator-declared,
+        // since Cosmos exposes no command to discover it per collection). It must
+        // be passed to CreateCollectionAsync for every new collection in that
+        // database, even one with no unique indexes of its own.
+        const string shardKeyField = "_pk";
+
+        var record      = MakeFullBackupRecord();
+        var blobBytes   = BuildBlobBytes(3);
+        var storageMock = new Mock<IStorageConnector>();
+        var targetMock  = MakeTargetMock();
+
+        storageMock
+            .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(blobBytes));
+
+        targetMock
+            .Setup(t => t.InsertManyAsync(
+                DbName, CollName,
+                It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(3L);
+
+        var config = MakeConfig(shardKeyField: shardKeyField);
+        var engine = MakeEngine(storageMock, targetMock, config);
+        var result = await engine.RunAsync(MakeRequest(), [record], null, CancellationToken.None);
+
+        Assert.AreEqual(BackupStatus.Completed, result.Status);
+
+        targetMock.Verify(
+            t => t.CreateCollectionAsync(
+                DbName, CollName,
+                shardKeyField,
+                It.IsAny<IReadOnlyList<IndexDefinition>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "The database's configured ShardKeyField must be passed for every new collection");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_CreateCollectionWarning_PropagatedToCollectionResult()
+    {
+        // Arrange — CreateCollectionAsync returns a non-fatal warning (e.g. a
+        // standard-MongoDB target that can't apply the database's shard key).
+        // The restore must still complete, carrying the warning through.
+        const string warning = "shard key not applied on standard MongoDB target";
+
+        var record      = MakeFullBackupRecord();
+        var blobBytes   = BuildBlobBytes(3);
+        var storageMock = new Mock<IStorageConnector>();
+        var targetMock  = MakeTargetMock();
+
+        storageMock
+            .Setup(s => s.OpenReadAsync(BlobPath, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new MemoryStream(blobBytes));
+
+        targetMock
+            .Setup(t => t.InsertManyAsync(
+                DbName, CollName,
+                It.IsAny<IAsyncEnumerable<ReadOnlyMemory<byte>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(3L);
+
+        targetMock
+            .Setup(t => t.CreateCollectionAsync(
+                DbName, CollName,
+                It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<IndexDefinition>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(warning);
+
+        var engine = MakeEngine(storageMock, targetMock);
+        var result = await engine.RunAsync(MakeRequest(), [record], null, CancellationToken.None);
+
+        Assert.AreEqual(BackupStatus.Completed, result.Status);
+        var collResult = result.CollectionResults.Single(r => r.CollectionName == CollName);
+        Assert.AreEqual(warning, collResult.Warning);
+        Assert.AreEqual(BackupStatus.Completed, collResult.Status);
     }
 
     // ------------------------------------------------------------------ //

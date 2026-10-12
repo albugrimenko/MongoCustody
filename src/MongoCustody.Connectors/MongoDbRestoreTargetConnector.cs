@@ -41,11 +41,13 @@ namespace MongoCustody.Connectors;
 public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
 {
     private readonly IMongoClient _client;
+    private readonly bool _isCosmos;
     private const int BatchSize = 100;
 
     public MongoDbRestoreTargetConnector(string connectionString)
     {
         _client = new MongoClient(connectionString);
+        _isCosmos = CosmosDetector.IsCosmos(connectionString);
     }
 
     /// <inheritdoc />
@@ -125,6 +127,86 @@ public sealed class MongoDbRestoreTargetConnector : IRestoreTargetConnector
             { "createIndexes", collectionName },
             { "indexes", indexDocs }
         };
+
+        await _client
+            .GetDatabase(databaseName)
+            .RunCommandAsync<BsonDocument>(command, cancellationToken: ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> CreateCollectionAsync(
+        string databaseName,
+        string collectionName,
+        string? shardKeyField,
+        IReadOnlyList<IndexDefinition> uniqueIndexes,
+        CancellationToken ct = default)
+    {
+        if (_isCosmos)
+        {
+            await CreateCosmosCollectionAsync(
+                    databaseName, collectionName, shardKeyField, uniqueIndexes, ct)
+                .ConfigureAwait(false);
+            return null;
+        }
+
+        // Standard MongoDB: no restriction against createIndexes with
+        // unique:true on a new/empty collection — use the ordinary path.
+        if (uniqueIndexes.Count > 0)
+            await CreateIndexesAsync(databaseName, collectionName, uniqueIndexes, ct)
+                .ConfigureAwait(false);
+
+        // Sharding a real MongoDB cluster requires a mongos/config-server
+        // topology this tool does not provision — surface as a non-fatal
+        // warning instead of silently dropping the shard key.
+        return !string.IsNullOrWhiteSpace(shardKeyField)
+            ? $"Database has ShardKeyField '{shardKeyField}' configured, but the restore " +
+              $"target is a standard MongoDB instance — sharding a target cluster is out " +
+              $"of scope for this tool. Collection '{collectionName}' was restored unsharded."
+            : null;
+    }
+
+    /// <summary>
+    /// Creates a collection on a Cosmos DB for MongoDB (RU-based API) target
+    /// via the <c>customAction: "CreateCollection"</c> extension command,
+    /// applying the shard key and any unique indexes atomically at creation
+    /// time. Required because Cosmos continuous-backup accounts reject a
+    /// plain <c>createIndexes</c> call for a unique index unconditionally,
+    /// even on an empty collection — and the shard key cannot be set after
+    /// collection creation at all.
+    /// </summary>
+    private async Task CreateCosmosCollectionAsync(
+        string databaseName,
+        string collectionName,
+        string? shardKeyField,
+        IReadOnlyList<IndexDefinition> uniqueIndexes,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(shardKeyField) && uniqueIndexes.Count == 0)
+            return; // No special requirements — implicit creation on first write.
+
+        var command = new BsonDocument
+        {
+            { "customAction", "CreateCollection" },
+            { "collection", collectionName }
+        };
+
+        if (!string.IsNullOrWhiteSpace(shardKeyField))
+            command["shardKey"] = shardKeyField;
+
+        if (uniqueIndexes.Count > 0)
+        {
+            var indexDocs = new BsonArray();
+            foreach (var idx in uniqueIndexes)
+            {
+                var specDoc = BsonDocument.Parse(idx.Spec.GetRawText());
+                specDoc.Remove("v");
+                specDoc.Remove("ns");
+                indexDocs.Add(specDoc);
+            }
+
+            command["indexes"] = indexDocs;
+        }
 
         await _client
             .GetDatabase(databaseName)

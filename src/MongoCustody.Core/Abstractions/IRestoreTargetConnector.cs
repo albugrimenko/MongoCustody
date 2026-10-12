@@ -79,6 +79,13 @@ public interface IRestoreTargetConnector : IAsyncDisposable
     /// Runs the MongoDB <c>createIndexes</c> command with the full
     /// specification stored in each <see cref="Models.IndexDefinition.Spec"/>.
     /// Silently skips <c>indexes</c> that are already present by name.
+    ///
+    /// <para>
+    /// Used for non-unique indexes only, created after all data for the
+    /// restore chain has loaded. Unique indexes (and shard keys) on a
+    /// brand-new collection must instead go through
+    /// <see cref="CreateCollectionAsync"/> — see that method for why.
+    /// </para>
     /// </summary>
     /// <param name="databaseName">Target database name.</param>
     /// <param name="collectionName">Target collection name.</param>
@@ -88,6 +95,64 @@ public interface IRestoreTargetConnector : IAsyncDisposable
         string databaseName,
         string collectionName,
         IReadOnlyList<Models.IndexDefinition> indexes,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a brand-new collection with its shard key and/or unique
+    /// indexes applied atomically at creation time, before any data is
+    /// written.
+    ///
+    /// <para>
+    /// This exists because Azure Cosmos DB for MongoDB (RU-based API)
+    /// accounts with continuous backup enabled reject a plain
+    /// <c>createIndexes</c> call for a unique index unconditionally — even
+    /// on a brand-new, empty collection. The shard key has the same
+    /// "must be set at creation, never after" constraint on both Cosmos DB
+    /// and sharded MongoDB clusters. On a Cosmos target this is implemented
+    /// via the <c>customAction: "CreateCollection"</c> extension command;
+    /// on a standard MongoDB target, <paramref name="uniqueIndexes"/> is
+    /// created with the ordinary <c>createIndexes</c> command (no such
+    /// restriction exists there) and <paramref name="shardKeyField"/> is not
+    /// applied — provisioning a real sharded cluster topology is out of
+    /// scope for this tool.
+    /// </para>
+    ///
+    /// <para>
+    /// Call exactly once per collection, only when the collection does not
+    /// already exist in the target (see <see cref="CollectionExistsAsync"/>),
+    /// before any documents are written to it. A no-op when
+    /// <paramref name="shardKeyField"/> is <c>null</c> and
+    /// <paramref name="uniqueIndexes"/> is empty — the collection is left to
+    /// be created implicitly by the first write, exactly as before this
+    /// method existed.
+    /// </para>
+    /// </summary>
+    /// <param name="databaseName">Target database name.</param>
+    /// <param name="collectionName">Target collection name (must not yet exist).</param>
+    /// <param name="shardKeyField">
+    /// The name of the shard-key field shared by every collection in this
+    /// database, or <c>null</c> when unsharded. See
+    /// <see cref="Models.DatabaseConfiguration.ShardKeyField"/> — Cosmos DB
+    /// for MongoDB does not expose an existing collection's shard key
+    /// through any Mongo command, so this is operator-declared per
+    /// database rather than discovered per collection at backup time.
+    /// </param>
+    /// <param name="uniqueIndexes">
+    /// Unique index definitions to create as part of collection creation.
+    /// Must contain only indexes where <see cref="Models.IndexDefinition.IsUnique"/>
+    /// is <c>true</c>.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// A non-fatal warning message when <paramref name="shardKeyField"/>
+    /// could not be applied (standard MongoDB target with a shard key
+    /// configured), otherwise <c>null</c>.
+    /// </returns>
+    Task<string?> CreateCollectionAsync(
+        string databaseName,
+        string collectionName,
+        string? shardKeyField,
+        IReadOnlyList<Models.IndexDefinition> uniqueIndexes,
         CancellationToken ct = default);
 
     /// <summary>
@@ -103,9 +168,7 @@ public interface IRestoreTargetConnector : IAsyncDisposable
     /// <summary>
     /// Drops <paramref name="collectionName"/> from <paramref name="databaseName"/>
     /// if it exists. Safe to call when the collection is absent — the operation
-    /// completes without error. Used before creating unique indexes on a new
-    /// collection to flush any stale index registrations that Cosmos DB for
-    /// MongoDB retains across collection drop/re-create cycles.
+    /// completes without error.
     /// </summary>
     Task DropCollectionAsync(
         string databaseName,

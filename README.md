@@ -172,7 +172,8 @@ All configuration maps to `MongoCustodyConfiguration`. Provide it via a `mongocu
     {
       "databaseName": "your-database",
       "excludedCollections": ["_sessions", "_changelog"],
-      "timestampAttribute": "_ts"
+      "timestampAttribute": "_ts",
+      "shardKeyField": "_pk"
     }
   ],
   "policy": {
@@ -264,8 +265,32 @@ If your collections use a different field name for the timestamp, override it pe
 | Field | Default | Purpose |
 |---|---|---|
 | `timestampAttribute` | `_ts` | Unix-second timestamp field used for incremental change detection |
+| `shardKeyField` | `null` (unsharded) | Shard key field shared by every collection in this database — see below |
 
 The `isDeleted` / soft-delete field is **not** configured here — MongoCustody does not filter by any deleted flag. All documents are backed up and restored regardless of their soft-delete state.
+
+### Shard key restoration (`shardKeyField`)
+
+Azure Cosmos DB for MongoDB (RU-based API) requires a collection's shard key to be set **at creation time** — it can never be added afterward, and (confirmed against a live account) there is no Mongo command that exposes an *existing* collection's shard key for auto-discovery. Because of this, the shard key is declared once per database instead of captured per collection at backup time:
+
+```json
+"databases": [
+  {
+    "databaseName": "your-database",
+    "shardKeyField": "_pk"
+  }
+]
+```
+
+When set, every new collection created during restore to a **Cosmos DB target** in this database has `_pk` applied as its shard key at creation time, via the `customAction: "CreateCollection"` extension command — the same mechanism used to work around Cosmos's unique-index restriction (see below). This assumes every sharded collection in the database shares the same shard-key field name, which is the common pattern for Cosmos DB for MongoDB accounts.
+
+On a **standard MongoDB restore target**, `shardKeyField` is not applied — provisioning a real sharded cluster (mongos + config servers) is out of scope for this tool. The collection is restored unsharded, and a non-fatal warning is recorded against that collection's restore result instead of failing the restore.
+
+Leave `shardKeyField` unset for databases with no sharded collections — collections are then created implicitly on first write, exactly as before this setting existed.
+
+### Unique indexes on Cosmos DB for MongoDB (continuous backup)
+
+Azure Cosmos DB for MongoDB accounts with **continuous backup** enabled reject a plain `createIndexes` call for a unique index unconditionally — even on a brand-new, empty collection (confirmed against a live account; it is not merely an "empty collection" requirement as the general Cosmos indexing docs might suggest). MongoCustody works around this automatically and transparently: when restoring a collection's unique indexes for the first time, it detects a Cosmos DB target (by connection-string host) and creates the collection with its unique indexes (and `shardKeyField`, if configured) applied atomically via `customAction: "CreateCollection"`, instead of creating the collection implicitly and adding indexes afterward. No configuration is needed for this — it's automatic whenever the restore target is Cosmos DB for MongoDB. On a standard MongoDB restore target, the ordinary `createIndexes` command is used as before.
 
 ---
 
@@ -1115,6 +1140,7 @@ The library is being built in the following sequence. Each phase is independentl
 | 14 | Dry-run auto-resolution from `DryRunConfiguration`; `ISecretProvider` injected into `MongoCustodyService`; `TargetConnectionString` and `TargetDatabaseName` auto-filled from config when blank | ✅ Complete |
 | 15 | Audit report expanded to all backup types (incremental + checkpoint); per-type breakdown in `AuditSummary`; Markdown renderer updated with Type/Week rows and "Backup Activity" section | ✅ Complete |
 | 16 | Fix: dry-run unique-index error on Cosmos DB for MongoDB; `DropCollectionAsync` added to `IRestoreTargetConnector`; called before unique-index creation to flush stale constraint state | ✅ Complete |
+| 17 | Fix: unique-index creation on Cosmos DB for MongoDB continuous-backup accounts now uses the `customAction: "CreateCollection"` extension command instead of `createIndexes` (which those accounts reject unconditionally, even on an empty collection); `DatabaseConfiguration.ShardKeyField` added so an operator-declared, per-database shard-key field name is applied to every new collection at creation time (Cosmos exposes no command to discover an existing collection's shard key, so it cannot be auto-captured per collection at backup time); `IRestoreTargetConnector.CreateCollectionAsync` added; standard MongoDB targets unaffected (plain `createIndexes` still used; shard key application out of scope, surfaced as a restore warning) | ✅ Complete |
 
 ---
 
