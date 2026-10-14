@@ -103,7 +103,7 @@ internal static class BackupsCommand
             else
             {
                 var scope = database is not null ? $"'{database}'" : "all databases";
-                Console.WriteLine($"Full backups for {scope}  {from:yyyy-MM-dd} → {to:yyyy-MM-dd}");
+                Console.WriteLine($"Full backups for {scope}  {from:yyyy-MM-dd} -> {to:yyyy-MM-dd}");
                 Output.WriteSeparator();
 
                 if (records.Count == 0)
@@ -272,7 +272,7 @@ internal static class BackupsCommand
                 var typeLabel = typeFilter is not null
                     ? $"{typeFilter} backups"
                     : "all backups";
-                Console.WriteLine($"{typeLabel} for {scope}  {from:yyyy-MM-dd} → {to:yyyy-MM-dd}");
+                Console.WriteLine($"{typeLabel} for {scope}  {from:yyyy-MM-dd} -> {to:yyyy-MM-dd}");
                 Output.WriteSeparator();
 
                 if (records.Count == 0)

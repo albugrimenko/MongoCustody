@@ -434,11 +434,11 @@ internal static class ValidateCommand
             }
 
             Console.Error.WriteLine(
-                $"Starting dry-run for '{database}' → '{targetDb}' as of {preview.BestAvailableDate:u}…");
+                $"Starting dry-run for '{database}' -> '{targetDb}' as of {preview.BestAvailableDate:u}…");
 
             IProgress<MongoCustody.Core.Models.OperationProgress>? progress = null;
             using var consoleProgress = format == OutputFormat.Text
-                ? new ConsoleProgress($"Dry-run '{database}' → '{targetDb}'")
+                ? new ConsoleProgress($"Dry-run '{database}' -> '{targetDb}'")
                 : null;
             if (consoleProgress is not null)
                 progress = consoleProgress.AsProgress();

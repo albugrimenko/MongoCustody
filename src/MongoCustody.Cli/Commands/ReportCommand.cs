@@ -121,7 +121,7 @@ internal static class ReportCommand
                 return 1;
             }
 
-            // Determine output path: CLI arg → config directory + auto filename → error
+            // Determine output path: CLI arg -> config directory + auto filename -> error
             if (string.IsNullOrWhiteSpace(outputFile))
             {
                 var dir = config.Report?.DefaultOutputDirectory;
@@ -159,7 +159,7 @@ internal static class ReportCommand
             var rec = report.Restores[0].Record;
             Console.WriteLine($"Restore Audit Report");
             Console.WriteLine($"  Restore ID : {rec.RestoreId}");
-            Console.WriteLine($"  Database   : {rec.DatabaseName} → {rec.TargetDatabaseName}");
+            Console.WriteLine($"  Database   : {rec.DatabaseName} -> {rec.TargetDatabaseName}");
             Console.WriteLine($"  Status     : {rec.Status}");
             Console.WriteLine($"  Requested  : {rec.RequestedAtUtc:yyyy-MM-dd HH:mm UTC}");
             Console.WriteLine($"  Chain steps: {report.Restores[0].ChainSteps.Count}");

@@ -157,12 +157,12 @@ internal static class RestoreCommand
 
             // --- Execute the restore ---
             Console.Error.WriteLine(
-                $"Starting restore of '{database}' → '{targetDatabase}' " +
+                $"Starting restore of '{database}' -> '{targetDatabase}' " +
                 $"as of {preview.BestAvailableDate:u}…");
 
             IProgress<OperationProgress>? progress = null;
             using var consoleProgress = format == OutputFormat.Text
-                ? new ConsoleProgress($"Restoring '{database}' → '{targetDatabase}'")
+                ? new ConsoleProgress($"Restoring '{database}' -> '{targetDatabase}'")
                 : null;
             if (consoleProgress is not null)
                 progress = consoleProgress.AsProgress();

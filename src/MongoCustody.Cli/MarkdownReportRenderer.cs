@@ -157,7 +157,7 @@ internal static class MarkdownReportRenderer
     {
         var r       = entry.Record;
         var label   = r.IsDryRun ? "Dry Run" : "Restore";
-        var heading = $"{FmtLong(r.RequestedAtUtc)} — {r.DatabaseName} → {r.TargetDatabaseName} [{label}: {r.Status}]";
+        var heading = $"{FmtLong(r.RequestedAtUtc)} — {r.DatabaseName} -> {r.TargetDatabaseName} [{label}: {r.Status}]";
         sb.AppendLine($"### {heading}");
         sb.AppendLine();
 
